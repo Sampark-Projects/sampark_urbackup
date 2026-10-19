@@ -34,6 +34,13 @@
 		}
 	}
 
+	// Flags from the host application travel in the hash (#sso=off, #sso_logout=1), not in the
+	// query string: the web server takes a query string on a path without a "." for an action name
+	function hashParam(name)
+	{
+		return new URLSearchParams(window.location.hash.replace(/^#/, "")).get(name);
+	}
+
 	function redirectUri()
 	{
 		return window.location.origin + window.location.pathname;
@@ -104,12 +111,11 @@
 		}
 	}
 
-	// ITSM logs out by loading the UI in a hidden frame with ?sso_logout=1
+	// ITSM logs out by loading the UI in a hidden frame with #sso_logout=1
 	function handleLogoutRequest()
 	{
 		if (!embedded()) return false;
-		var q = new URLSearchParams(window.location.search);
-		if (q.get("sso_logout") !== "1") return false;
+		if (hashParam("sso_logout") !== "1") return false;
 
 		var ses = takeStoredSession();
 		post("step=logout&ses=" + encodeURIComponent(ses), function () { });
@@ -123,7 +129,7 @@
 
 		// The host application asks for the normal login page, e.g. ITSM for a user
 		// that did not sign in with SSO, who must not get whoever the SSO session belongs to
-		if (new URLSearchParams(window.location.search).get("sso") === "off") return false;
+		if (hashParam("sso") === "off") return false;
 
 		try
 		{
@@ -278,7 +284,7 @@
 		}
 	};
 
-	// Remember the session of an embedded UI so that ITSM can end it with ?sso_logout=1
+	// Remember the session of an embedded UI so that ITSM can end it with #sso_logout=1
 	var orig_login3 = login3;
 	login3 = function (data)
 	{

@@ -4911,6 +4911,16 @@ function login3(data)
 	}
 	
 	build_main_nav();
+
+	if(g.allowed_nav_items.length==0)
+	{
+		// Signed in, but no rights yet (e.g. a new SSO user): the status page would
+		// be refused by the server and look like an expired session
+		I('nav_pos').innerHTML="";
+		I('data_f').innerHTML="<div class=\"alert alert-warning\">You are signed in as <b>"+escapeHTML(data.username||"")+"</b>, but this account has no access rights yet. Ask an administrator to grant rights in Settings &rarr; Users.</div>";
+		return;
+	}
+
 	show_status1();
 }
 g.session_timeout_cb = function ()
