@@ -120,7 +120,7 @@ bool UrlFactory::sendMail(const MailServer &server, const std::vector<std::strin
 		const std::string &subject,	const std::string &message, std::string *errmsg)
 {
 	CURL *curl=curl_easy_init();
-	curl_slist* recpt = nullptr;
+	curl_slist* recpt = NULL;
 
 	std::string mailfrom=server.mailfrom;
 
@@ -179,7 +179,7 @@ bool UrlFactory::sendMail(const MailServer &server, const std::vector<std::strin
 	if(res!=CURLE_OK)
 	{
 		errbuf.resize(strlen(errbuf.c_str()));
-		if(errmsg==nullptr)
+		if(errmsg==NULL)
 		{
 			Server->Log(std::string("Error during cURL operation occurred: ")+curl_easy_strerror(res)+" ("+convert(res)+") -- "+errbuf, LL_DEBUG);
 		}
@@ -200,7 +200,7 @@ bool UrlFactory::sendMail(const MailServer &server, const std::vector<std::strin
 
 std::string UrlFactory::downloadString( const std::string& url, const std::string& http_proxy, std::string *errmsg/*=NULL*/ )
 {
-	if(errmsg!=nullptr)
+	if(errmsg!=NULL)
 	{
 		errmsg->clear();
 	}
@@ -235,7 +235,7 @@ std::string UrlFactory::downloadString( const std::string& url, const std::strin
 	if(res!=CURLE_OK)
 	{
 		errbuf.resize(strlen(errbuf.c_str()));
-		if(errmsg==nullptr)
+		if(errmsg==NULL)
 		{
 			Server->Log(std::string("Error during cURL operation occurred: ")+curl_easy_strerror(res)+" (ec="+convert(res)+"), "+errbuf, LL_DEBUG);
 		}
@@ -261,7 +261,7 @@ std::string UrlFactory::downloadString( const std::string& url, const std::strin
 
 bool UrlFactory::downloadFile(const std::string& url, IFile* output, const std::string& http_proxy, std::string *errmsg)
 {
-	if(errmsg!=nullptr)
+	if(errmsg!=NULL)
 	{
 		errmsg->clear();
 	}
@@ -287,7 +287,7 @@ bool UrlFactory::downloadFile(const std::string& url, IFile* output, const std::
 	if(res!=CURLE_OK)
 	{
 		errbuf.resize(strlen(errbuf.c_str()));
-		if(errmsg==nullptr)
+		if(errmsg==NULL)
 		{
 			Server->Log(std::string("Error during cURL operation occurred: ")+curl_easy_strerror(res)+" (ec="+convert(res)+"), "+errbuf, LL_DEBUG);
 		}
@@ -303,7 +303,7 @@ bool UrlFactory::downloadFile(const std::string& url, IFile* output, const std::
 
 bool UrlFactory::requestUrl(const std::string & url, str_map & params, std::string& ret, long& http_code, std::string * errmsg)
 {
-	if (errmsg != nullptr)
+	if (errmsg != NULL)
 	{
 		errmsg->clear();
 	}
@@ -441,7 +441,7 @@ bool UrlFactory::requestUrl(const std::string & url, str_map & params, std::stri
 	errbuf.resize(CURL_ERROR_SIZE * 2);
 	CHECK_SETOPT(curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, (char*)errbuf.c_str()));
 
-	struct curl_slist* headers = nullptr;
+	struct curl_slist* headers = NULL;
 	if (params.find("content_type") != params.end())
 	{
 		headers = curl_slist_append(headers, ("content-type: " + params["content_type"]).c_str());
@@ -468,7 +468,7 @@ bool UrlFactory::requestUrl(const std::string & url, str_map & params, std::stri
 		headers = curl_slist_append(headers, basic_authorization.c_str());
 	}
 
-	if (headers != nullptr)
+	if (headers != NULL)
 	{
 		CURLcode rc = curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 		if (rc != CURLE_OK)
@@ -486,7 +486,7 @@ bool UrlFactory::requestUrl(const std::string & url, str_map & params, std::stri
 	if (res != CURLE_OK)
 	{
 		errbuf.resize(strlen(errbuf.c_str()));
-		if (errmsg == nullptr)
+		if (errmsg == NULL)
 		{
 			Server->Log(std::string("Error during cURL operation occurred: ") + curl_easy_strerror(res) + " (ec=" + convert(res) + "), " + errbuf, LL_DEBUG);
 		}
@@ -497,7 +497,7 @@ bool UrlFactory::requestUrl(const std::string & url, str_map & params, std::stri
 		has_error = true;
 	}
 
-	if (headers != nullptr)
+	if (headers != NULL)
 	{
 		curl_slist_free_all(headers);
 	}
@@ -563,7 +563,7 @@ std::vector<std::multimap<std::string, std::string> > UrlFactory::queryLDAP( con
 	if(res!=CURLE_OK)
 	{
 		errbuf.resize(strlen(errbuf.c_str()));
-		if(errmsg==nullptr)
+		if(errmsg==NULL)
 		{
 			Server->Log(std::string("Error during cURL operation occurred: ")+curl_easy_strerror(res)+" (ec="+convert(res)+"), "+errbuf, LL_DEBUG);
 		}

@@ -1,5 +1,3 @@
-#pragma once
-
 #include "../Interface/Thread.h"
 #include "../Interface/Mutex.h"
 

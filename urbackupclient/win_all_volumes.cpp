@@ -143,7 +143,7 @@ std::string get_all_volumes_list(bool filter_usb, SVolumesCache*& cache)
 		return "";
 	}
 
-	if(cache==nullptr)
+	if(cache==NULL)
 	{
 		cache=new SVolumesCache;
 	}
@@ -207,7 +207,7 @@ std::string get_all_volumes_list(bool filter_usb, SVolumesCache*& cache)
 			}
 			else
 			{				
-				std::unique_ptr<IFile> dev(Server->openFile(dev_fn, MODE_READ_DEVICE));
+				std::auto_ptr<IFile> dev(Server->openFile(dev_fn, MODE_READ_DEVICE));
 
 				if(!dev.get())
 				{

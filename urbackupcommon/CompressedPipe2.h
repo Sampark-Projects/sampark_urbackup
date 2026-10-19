@@ -61,6 +61,12 @@ public:
 
 	virtual _i64 getRealTransferredBytes();
 
+	virtual void setUsageString(const std::string& str);
+
+	virtual bool setCompressionSettings(const SCompressionSettings& params);
+
+	bool setOption(const SocketOption opt) override;
+
 private:
 	size_t ProcessToBuffer(char *buffer, size_t bsize, bool fromLast);
 	void ProcessToString(std::string* ret, bool fromLast);
@@ -81,6 +87,6 @@ private:
 	z_stream inf_stream;
 	z_stream def_stream;
 
-	std::unique_ptr<IMutex> read_mutex;
-	std::unique_ptr<IMutex> write_mutex;
+	std::auto_ptr<IMutex> read_mutex;
+	std::auto_ptr<IMutex> write_mutex;	
 };

@@ -303,7 +303,7 @@ public:
 
 struct SQueueRef
 {
-	std::unique_ptr<IMutex> mutex;
+	std::auto_ptr<IMutex> mutex;
 	IFile* phash_queue;
 	size_t refcount;
 	IDeregisterFileSrvScriptFn* dereg_fn;
@@ -382,8 +382,6 @@ public:
 	
 	static bool backgroundBackupsEnabled(const std::string& clientsubname);
 
-	static bool pauseIfWindowsUnlocked();
-
 	static std::vector<std::string> buildExcludeList(const std::string& val);
 	static std::vector<std::string> parseExcludePatterns(const std::string& val);
 	static std::vector<SIndexInclude> parseIncludePatterns(const std::string& val);
@@ -400,7 +398,7 @@ public:
 
 	static bool normalizeVolume(std::string& volume);
 
-	static void readPatterns(int facet_id, int index_group, std::string index_clientsubname,
+	static void readPatterns(int index_group, std::string index_clientsubname,
 		std::vector<std::string>& exclude_dirs, std::vector<SIndexInclude>& include_dirs,
 		bool& backup_dirs_optional);
 
@@ -421,8 +419,6 @@ public:
 #ifndef _WIN32
 	static std::string get_snapshot_script_location(const std::string& scriptname, const std::string& index_clientsubname);
 #endif
-
-	static bool isWindowsLocked();
 	
 private:
 	static void addResult(unsigned int id, const std::string& res);
@@ -454,7 +450,8 @@ private:
 	{
 		IndexErrorInfo_Ok = 0,
 		IndexErrorInfo_Error = 1,
-		IndexErrorInfo_NoBackupPaths = 2
+		IndexErrorInfo_NoBackupPaths = 2,
+		IndexErrorInfo_FilelistWriteError = 3
 	};
 
 	IndexErrorInfo indexDirs(bool full_backup, bool simultaneous_other);
@@ -481,7 +478,7 @@ private:
 #ifdef _WIN32
 	bool start_shadowcopy_components(VSS_ID& ssetid, bool* has_active_transaction);
 	bool start_shadowcopy_win( SCDirs * dir, std::string &wpath, bool for_imagebackup, bool with_components, bool * &onlyref, bool* has_active_transaction);
-	bool wait_for(IVssAsync *vsasync, const std::string& error_prefix);
+	bool wait_for(IVssAsync *vsasync, const std::string& error_prefix, const int timeoutms = -1);
 	std::string GetErrorHResErrStr(HRESULT res);
 	void printProviderInfo(HRESULT res);
 	bool check_writer_status(IVssBackupComponents *backupcom, std::string& errmsg, 
@@ -669,7 +666,7 @@ private:
 
 	SVolumesCache* volumes_cache;
 
-	std::unique_ptr<ScopedBackgroundPrio> background_prio;
+	std::auto_ptr<ScopedBackgroundPrio> background_prio;
 
 	std::string starttoken;
 
@@ -730,7 +727,7 @@ private:
 		int64 target_generation;
 	};
 
-	std::unique_ptr<ClientHash> client_hash;
+	std::auto_ptr<ClientHash> client_hash;
 
 	std::vector< SBufferItem > modify_file_buffer;
 	size_t modify_file_buffer_size;
@@ -748,7 +745,6 @@ private:
 	EBackupDirServerDefault index_server_default;
 	bool index_follow_last;
 	bool index_keep_files;
-	int index_facet_id = 1;
 
 	SCDirs* index_scd;
 
@@ -880,12 +876,12 @@ private:
 		const std::vector<std::string>& exclude_dirs,
 		const std::vector<SIndexInclude>& include_dirs, const std::string& orig_path);
 
-	std::unique_ptr<SLastFileList> last_filelist;
+	std::auto_ptr<SLastFileList> last_filelist;
 
 	std::vector<SReadError> read_errors;
 	IMutex* read_error_mutex;
 
-	std::unique_ptr<IFsFile> index_hdat_file;
+	std::auto_ptr<IFsFile> index_hdat_file;
 	std::map<std::string, size_t> index_hdat_sequence_ids;
 	int64 index_hdat_fs_block_size;
 	int64 index_chunkhash_pos;
@@ -894,6 +890,8 @@ private:
 	int64 phash_queue_write_pos;
 	std::vector<char> phash_queue_buffer;
 	int64 file_id;
+
+	bool dataless_warning_logged;
 
 	struct SResult
 	{

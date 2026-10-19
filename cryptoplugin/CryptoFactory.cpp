@@ -19,7 +19,9 @@
 #include "../vld.h"
 #include "CryptoFactory.h"
 #include "../Interface/Server.h"
+#include "../Interface/File.h"
 #include "../Interface/ThreadPool.h"
+#include "../stringtools.h"
 
 #include "AESEncryption.h"
 #include "AESDecryption.h"
@@ -30,6 +32,7 @@
 
 #include "cryptopp_inc.h"
 #include "ECDHKeyExchange.h"
+#include <assert.h>
 
 using namespace CryptoPPCompat;
 
@@ -422,4 +425,104 @@ std::string CryptoFactory::sha256Binary(const std::string& data)
 	byte sha256_digest[CryptoPP::SHA256::DIGESTSIZE];
 	CryptoPP::SHA256().CalculateDigest(sha256_digest, reinterpret_cast<const byte*>(data.data()), data.size());
 	return std::string(reinterpret_cast<char*>(sha256_digest), sizeof(sha256_digest));
+}
+
+namespace
+{
+	unsigned int get_num_zero_bits(const std::string &str)
+	{
+		unsigned int num_bits=0;
+		for(size_t i=0; i<str.size(); i++)
+		{
+			unsigned char c=str[i];
+			if(c==0)
+			{
+				num_bits+=8;
+				continue;
+			}
+			for(int j=0; j<8; j++)
+			{
+				if(c&0x80)
+					return num_bits;
+				++num_bits;
+				c<<=1;
+			}
+		}
+		return num_bits;
+	}
+}
+
+std::string CryptoFactory::performProofOfWork(const std::string &challenge, unsigned int difficulty)
+{
+	int64 salt = 0;
+    std::string salt_str;
+    salt_str.resize(sizeof(salt));
+    
+    while(true)
+    {
+        salt_str.assign((char*)&salt, sizeof(salt));
+        std::string hash = generateBinaryPasswordHash(challenge, salt_str, 1);
+        if(get_num_zero_bits(hash)>=difficulty)
+        {
+            return salt_str;
+        }
+        ++salt;
+    }
+}
+
+bool CryptoFactory::verifyProofOfWork(const std::string &challenge, const std::string &proof, unsigned int difficulty)
+{
+	std::string hash = generateBinaryPasswordHash(challenge, proof, 1);
+    return get_num_zero_bits(hash) >= difficulty;
+}
+
+bool CryptoFactory::convertOpenSslSig(const std::string& pubkeyFn, const std::string& sigFn, const std::string& outFn)
+{
+	std::string derSignature, p1363Signature;
+	derSignature = getFile(sigFn);
+	if (derSignature.empty())
+	{
+		Server->Log("Error reading sigFn at " + sigFn, LL_ERROR);
+		return false;
+	}
+
+	CryptoPP::ECDSA<CryptoPP::EC2N, CryptoPP::SHA256>::PublicKey PublicKey;
+
+	try
+	{
+		PublicKey.Load(CryptoPP::FileSource(pubkeyFn.c_str(), true).Ref());
+
+		CryptoPP::ECDSA<CryptoPP::EC2N, CryptoPP::SHA256>::Verifier verifier(PublicKey);
+
+		// Make room for the P1363 encoding
+		p1363Signature.resize(verifier.SignatureLength());
+
+		size_t encodedSize = CryptoPP::DSAConvertSignatureFormat(
+			(byte*)(&p1363Signature[0]), p1363Signature.size(), CryptoPP::DSA_P1363,
+			(const byte*)(derSignature.data()), derSignature.size(), CryptoPP::DSA_DER);
+
+		assert(encodedSize <= p1363Signature.size());
+		p1363Signature.resize(encodedSize);
+
+		std::auto_ptr<IFsFile> f(Server->openFile(outFn, MODE_WRITE));
+		if (f.get() == NULL)
+		{
+			Server->Log("Error opening out file for signature at " + outFn, LL_ERROR);
+			return false;
+		}
+
+		if (f->Write(p1363Signature) != p1363Signature.size())
+		{
+			Server->Log("Error writing signature to " + outFn, LL_ERROR);
+			return false;
+		}
+
+		return true;
+	}
+	catch (const CryptoPP::Exception& e)
+	{
+		Server->Log("Exception occured in CryptoFactory::convertOpenSslSig: " + e.GetWhat(), LL_ERROR);
+	}
+
+	return false;
 }

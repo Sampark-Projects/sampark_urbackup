@@ -24,14 +24,22 @@
 #include "../../stringtools.h"
 #include "../../urbackupcommon/os_functions.h"
 #include "../../Interface/Server.h"
-#include "../../Interface/File.h"
 #include <assert.h>
 
-bool TreeReader::readTree(IFile* f)
+const size_t buffer_size=4096;
+
+bool TreeReader::readTree(const std::string &fn)
 {
-	f->Seek(0);
-	std::vector<char> buffer(512 * 1024);
+	std::fstream in;
+	in.open(fn.c_str(), std::ios::in | std::ios::binary );
+	if (!in.is_open())
+	{
+		Log("Cannot read file tree from file \"" + fn + "\"");
+		return false;
+	}
+
 	size_t read;
+	char buffer[buffer_size];
 	int state=0;
 	size_t lines=0;
 	size_t stringbuffer_size=0;
@@ -39,14 +47,8 @@ bool TreeReader::readTree(IFile* f)
 	char ltype=0;
 	do
 	{
-		bool has_read_error = false;
-		read = f->Read(buffer.data(), buffer.size(), &has_read_error);
-
-		if (has_read_error)
-		{
-			Log("Error reading from tree file -1");
-			return false;
-		}
+		in.read(buffer, buffer_size);
+		read=(size_t)in.gcount();
 		
 		for(size_t i=0;i<read;++i)
 		{
@@ -67,7 +69,7 @@ bool TreeReader::readTree(IFile* f)
 				}
 				else
 				{
-					Log("Error parsing file readTree - 0. Expected 'f', 'd', or 'u'. Got '"+std::string(1, ch)+"' at line "+convert(lines)+" while reading "+ f->getFilename());
+					Log("Error parsing file readTree - 0. Expected 'f', 'd', or 'u'. Got '"+std::string(1, ch)+"' at line "+convert(lines)+" while reading "+fn);
 					return false;
 				}
 				break;
@@ -141,9 +143,9 @@ bool TreeReader::readTree(IFile* f)
 	}
 	while(read>0);
 
+	in.clear();
 	name.clear();
-
-	f->Seek(0);
+	in.seekg(0, std::ios::beg);
 
 
 	size_t stringbuffer_pos=0;
@@ -174,14 +176,8 @@ bool TreeReader::readTree(IFile* f)
 
 	do
 	{
-		bool has_read_error = false;
-		read = f->Read(buffer.data(), buffer.size(), &has_read_error);
-
-		if (has_read_error)
-		{
-			Log("Error reading from tree file -2");
-			return false;
-		}
+		in.read(buffer, buffer_size);
+		read=(size_t)in.gcount();
 		
 		for(size_t i=0;i<read;++i)
 		{
@@ -206,7 +202,7 @@ bool TreeReader::readTree(IFile* f)
 					}
 					else
 					{
-						Log("Error parsing file readTree - 1. Expected 'f', 'd', or 'u'. Got '" + std::string(1, ch) + "' at line " + convert(lines)+" while reading "+f->getFilename());
+						Log("Error parsing file readTree - 1. Expected 'f', 'd', or 'u'. Got '" + std::string(1, ch) + "' at line " + convert(lines)+" while reading "+fn);
 						return false;
 					}					
 					break;
@@ -356,7 +352,7 @@ bool TreeReader::readTree(IFile* f)
 			}		
 		}
 	}
-	while(read==buffer.size());
+	while(read==buffer_size);
 
 	assert(idx == nodes.size());
 	assert(stringbuffer_pos == stringbuffer.size());

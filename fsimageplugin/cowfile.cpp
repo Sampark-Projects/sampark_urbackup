@@ -204,8 +204,8 @@ CowFile::CowFile(const std::string &fn, const std::string &parent_fn, bool pRead
 	read_only = pRead_only;
 
 	{
-		std::unique_ptr<IFile> parentf(Server->openFile(parent_fn, MODE_READ));
-		if (parentf.get() != nullptr)
+		std::auto_ptr<IFile> parentf(Server->openFile(parent_fn, MODE_READ));
+		if (parentf.get() != NULL)
 		{
 			filesize = parentf->Size();
 			is_open = true;
@@ -529,6 +529,7 @@ void CowFile::setupBitmap()
 	uint64 n_blocks = filesize/blocksize+(filesize%blocksize>0?1:0);
 	size_t n_bits = n_blocks/8 + (n_blocks%8>0?1:0);
 	bitmap.resize(n_bits);
+	bitmap_dirty=true;
 }
 
 void CowFile::resizeBitmap()
@@ -539,72 +540,6 @@ void CowFile::resizeBitmap()
 	{
 		bitmap.insert(bitmap.end(), n_bits-bitmap.size(), 0);
 	}
-}
-
-std::string CowFile::Read(_u32 tr, bool* has_error)
-{
-	assert(false);
-	return std::string();
-}
-
-std::string CowFile::Read(int64 spos, _u32 tr, bool* has_error)
-{
-	assert(false);
-	return std::string();
-}
-
-_u32 CowFile::Read(char* buffer, _u32 bsize, bool* has_error)
-{
-	assert(false);
-	return _u32();
-}
-
-_u32 CowFile::Read(int64 spos, char* buffer, _u32 bsize, bool* has_error)
-{
-	assert(false);
-	return _u32();
-}
-
-_u32 CowFile::Write(const std::string& tw, bool* has_error)
-{
-	assert(false);
-	return _u32();
-}
-
-_u32 CowFile::Write(int64 spos, const std::string& tw, bool* has_error)
-{
-	assert(false);
-	return _u32();
-}
-
-_u32 CowFile::Write(int64 spos, const char* buffer, _u32 bsiz, bool* has_error)
-{
-	assert(false);
-	return _u32();
-}
-
-_i64 CowFile::Size(void)
-{
-	return getSize();
-}
-
-_i64 CowFile::RealSize()
-{
-	return usedSize();
-}
-
-bool CowFile::PunchHole(_i64 spos, _i64 size)
-{
-	return setUnused(spos, spos + size);
-}
-
-bool CowFile::Sync()
-{
-#ifndef _WIN32
-	return fsync(fd) == 0;
-#else
-	return FlushFileBuffers(fd)!=FALSE;
-#endif
 }
 
 bool CowFile::isBitmapSet(uint64 offset)
@@ -639,7 +574,7 @@ void CowFile::setBitmapBit(uint64 offset, bool v)
 
 bool CowFile::saveBitmap()
 {
-	std::unique_ptr<IFile> bitmap_file(Server->openFile(filename+".bitmap", MODE_WRITE));
+	std::auto_ptr<IFile> bitmap_file(Server->openFile(filename+".bitmap", MODE_WRITE));
 
 	if(!bitmap_file.get())
 	{
@@ -658,7 +593,7 @@ bool CowFile::saveBitmap()
 
 bool CowFile::loadBitmap(const std::string& bitmap_fn)
 {
-	std::unique_ptr<IFile> bitmap_file(Server->openFile(bitmap_fn, MODE_READ));
+	std::auto_ptr<IFile> bitmap_file(Server->openFile(bitmap_fn, MODE_READ));
 
 	if(!bitmap_file.get())
 	{
@@ -825,7 +760,7 @@ bool CowFile::setUnused(_i64 unused_start, _i64 unused_end)
 bool CowFile::trimUnused(_i64 fs_offset, _i64 trim_blocksize, ITrimCallback* trim_callback)
 {
 	FileWrapper devfile(this, fs_offset);
-	std::unique_ptr<IReadOnlyBitmap> bitmap_source;
+	std::auto_ptr<IReadOnlyBitmap> bitmap_source;
 
 	bitmap_source.reset(new ClientBitmap(filename + ".cbitmap"));
 
@@ -833,7 +768,7 @@ bool CowFile::trimUnused(_i64 fs_offset, _i64 trim_blocksize, ITrimCallback* tri
 	{
 		Server->Log("Error reading client bitmap. Falling back to reading bitmap from NTFS", LL_WARNING);
 
-		bitmap_source.reset(new FSNTFS(&devfile, IFSImageFactory::EReadaheadMode_None, false, nullptr));
+		bitmap_source.reset(new FSNTFS(&devfile, IFSImageFactory::EReadaheadMode_None, false, NULL));
 	}
 
 	if (bitmap_source->hasError())
@@ -902,7 +837,7 @@ bool CowFile::trimUnused(_i64 fs_offset, _i64 trim_blocksize, ITrimCallback* tri
 					Server->Log("Trimming syscall failed. Stopping trimming.", LL_WARNING);
 					return false;
 				}
-				if(trim_callback!=nullptr)
+				if(trim_callback!=NULL)
 				{
 					trim_callback->trimmed(unused_start - fs_offset, unused_end - fs_offset);
 				}
@@ -924,7 +859,7 @@ bool CowFile::trimUnused(_i64 fs_offset, _i64 trim_blocksize, ITrimCallback* tri
 				Server->Log("Trimming syscall failed. Stopping trimming (end).", LL_WARNING);
 				return false;
 			}
-			if(trim_callback!=nullptr)
+			if(trim_callback!=NULL)
 			{
 				trim_callback->trimmed(unused_start - fs_offset, unused_end - fs_offset);
 			}
@@ -937,7 +872,7 @@ bool CowFile::trimUnused(_i64 fs_offset, _i64 trim_blocksize, ITrimCallback* tri
 bool CowFile::syncBitmap(_i64 fs_offset)
 {
 	FileWrapper devfile(this, fs_offset);
-	std::unique_ptr<IReadOnlyBitmap> bitmap_source;
+	std::auto_ptr<IReadOnlyBitmap> bitmap_source;
 
 	bitmap_source.reset(new ClientBitmap(filename + ".cbitmap"));
 
@@ -945,7 +880,7 @@ bool CowFile::syncBitmap(_i64 fs_offset)
 	{
 		Server->Log("Error reading client bitmap. Falling back to reading bitmap from NTFS", LL_WARNING);
 
-		bitmap_source.reset(new FSNTFS(&devfile, IFSImageFactory::EReadaheadMode_None, false, nullptr));
+		bitmap_source.reset(new FSNTFS(&devfile, IFSImageFactory::EReadaheadMode_None, false, NULL));
 	}
 
 	if (bitmap_source->hasError())

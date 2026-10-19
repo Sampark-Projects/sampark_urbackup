@@ -74,9 +74,15 @@ public:
 
 	int64 getEncryptionOverheadBytes();
 
+	virtual void setUsageString(const std::string& str);
+
+	virtual bool setCompressionSettings(const SCompressionSettings& params);
+
+	bool setOption(const SocketOption opt);
+
 private:
-	std::unique_ptr<IAESGCMDecryption> dec;
-	std::unique_ptr<IAESGCMEncryption> enc;
+	std::auto_ptr<IAESGCMDecryption> dec;
+	std::auto_ptr<IAESGCMEncryption> enc;
 
 	IPipe *cs;
 	bool destroy_cs;
@@ -85,6 +91,6 @@ private:
 	size_t curr_write_chunk_size;
 	int64 last_flush_time;
 
-	std::unique_ptr<IMutex> read_mutex;
-	std::unique_ptr<IMutex> write_mutex;
+	std::auto_ptr<IMutex> read_mutex;
+	std::auto_ptr<IMutex> write_mutex;
 };

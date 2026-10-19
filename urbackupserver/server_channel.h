@@ -70,8 +70,6 @@ private:
 	void DOWNLOAD_FILES_TOKENS(str_map& params);
 	void RESTORE_PERCENT( str_map params );
 	void RESTORE_DONE( str_map params );
-	void BACKUP_PERCENT(str_map params);
-	void BACKUP_DONE(str_map params);
 	void STARTUP(str_map& params);
 
 	void reset();
@@ -85,6 +83,8 @@ private:
 	void remove_extra_channel();
 
 	static void timeout_restore_tokens_used();
+
+	void startReauth();
 
 	ClientMain *client_main;
 	IPipe *exitpipe;

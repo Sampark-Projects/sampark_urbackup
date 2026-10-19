@@ -43,42 +43,39 @@ const int64 unixtime_offset=946684800;
 
 const unsigned int sector_size=512;
 
-namespace
+size_t VHDFile::getNumCompThreads(bool read_only)
 {
-	size_t getNumCompThreads(bool read_only)
-	{
-		if (read_only)
-			return 1;
+	if (read_only)
+		return 1;
 
-		const size_t maxCpus = 5;
+	const size_t maxCpus = 5;
 #ifdef _WIN32
-		SYSTEM_INFO system_info;
-		GetSystemInfo(&system_info);
-		DWORD numCpus = system_info.dwNumberOfProcessors;
-		if (numCpus == 0)
-			return 1;
-		return (std::min)(static_cast<size_t>(numCpus), maxCpus);
+	SYSTEM_INFO system_info;
+	GetSystemInfo(&system_info);
+	DWORD numCpus = system_info.dwNumberOfProcessors;
+	if (numCpus == 0)
+		return 1;
+	return (std::min)(static_cast<size_t>(numCpus), maxCpus);
 #else
-		long numCpus = sysconf(_SC_NPROCESSORS_ONLN);
-		if (numCpus < 0)
-		{
-			numCpus = 2;
-		}
-		else if (numCpus == 0)
-		{
-			numCpus = 1;
-		}
-		return (std::min)(static_cast<size_t>(numCpus), maxCpus);
-#endif
+	long numCpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (numCpus < 0)
+	{
+		numCpus = 2;
 	}
+	else if (numCpus == 0)
+	{
+		numCpus = 1;
+	}
+	return (std::min)(static_cast<size_t>(numCpus), maxCpus);
+#endif
 }
 
 VHDFile::VHDFile(const std::string &fn, bool pRead_only, uint64 pDstsize, unsigned int pBlocksize, bool fast_mode, bool compress, size_t compress_n_threads)
 	: dstsize(pDstsize), blocksize(pBlocksize), fast_mode(fast_mode), bitmap_offset(0), bitmap_dirty(false), volume_offset(0), finished(false),
-	file(nullptr)
+	file(NULL)
 {
-	compressed_file=nullptr;
-	parent=nullptr;
+	compressed_file=NULL;
+	parent=NULL;
 	read_only=pRead_only;
 	is_open=false;
 	curr_offset=0;
@@ -95,7 +92,7 @@ VHDFile::VHDFile(const std::string &fn, bool pRead_only, uint64 pDstsize, unsign
 			backing_file = Server->openFile(fn, MODE_RW_CREATE);
 			openedExisting=false;
 		}
-		if(backing_file==nullptr)
+		if(backing_file==NULL)
 		{
 			Server->Log("Error opening VHD file", LL_ERROR);
 			return;
@@ -134,7 +131,7 @@ VHDFile::VHDFile(const std::string &fn, bool pRead_only, uint64 pDstsize, unsign
 		}
 
 		write_header(false);
-		write_dynamicheader(nullptr, 0, "");
+		write_dynamicheader(NULL, 0, "");
 		write_bat();
 
 		nextblock_offset=bat_offset+batsize*sizeof(unsigned int);
@@ -169,13 +166,13 @@ VHDFile::VHDFile(const std::string &fn, bool pRead_only, uint64 pDstsize, unsign
 }
 
 VHDFile::VHDFile(const std::string &fn, const std::string &parent_fn, bool pRead_only, bool fast_mode, bool compress, uint64 pDstsize, size_t compress_n_threads)
-	: fast_mode(fast_mode), bitmap_offset(0), bitmap_dirty(false), volume_offset(0), finished(false), file(nullptr)
+	: fast_mode(fast_mode), bitmap_offset(0), bitmap_dirty(false), volume_offset(0), finished(false), file(NULL)
 {
-	compressed_file=nullptr;
+	compressed_file=NULL;
 	curr_offset=0;
 	is_open=false;
 	read_only=pRead_only;
-	parent=nullptr;
+	parent=NULL;
 	curr_offset=0;
 	currblock=0xFFFFFFFF;
 
@@ -188,7 +185,7 @@ VHDFile::VHDFile(const std::string &fn, const std::string &parent_fn, bool pRead
 			backing_file=Server->openFile(fn, MODE_RW_CREATE);
 			openedExisting=false;
 		}
-		if(backing_file==nullptr)
+		if(backing_file==NULL)
 		{
 			Server->Log("Error opening VHD file", LL_ERROR);
 			return;
@@ -273,7 +270,7 @@ VHDFile::VHDFile(const std::string &fn, const std::string &parent_fn, bool pRead
 
 VHDFile::~VHDFile()
 {
-	if(!finished && file!=nullptr)
+	if(!finished && file!=NULL)
 	{
 		finish();
 	}
@@ -403,7 +400,7 @@ bool VHDFile::write_dynamicheader(char *parent_uid, unsigned int parent_timestam
 	dynamicheader.table_entries=big_endian(batsize);
 	dynamicheader.blocksize=big_endian(blocksize);
 	dynamicheader.checksum=0;
-	if(parent_uid!=nullptr)
+	if(parent_uid!=NULL)
 	{
 		//Differencing file
 		memcpy(dynamicheader.parent_uid, parent_uid, 16);
@@ -780,7 +777,7 @@ bool VHDFile::Read(char* buffer, size_t bsize, size_t &read)
 		{
 			unsigned int wantread=(unsigned int)(std::min)(remaining, toread);
 
-			if(parent==nullptr)
+			if(parent==NULL)
 				memset(&buffer[read], 0, wantread );
 			else
 			{
@@ -868,7 +865,7 @@ bool VHDFile::Read(char* buffer, size_t bsize, size_t &read)
 			}
 			else
 			{
-				if(parent!=nullptr)
+				if(parent!=NULL)
 				{
 					parent->Seek(curr_offset);
 					bool b=parent->Read(&buffer[read], wantread, wantread);
@@ -1102,7 +1099,7 @@ bool VHDFile::has_block(bool use_parent)
 	unsigned int bat_off=big_endian(bat[block]);
 	if(bat_off==0xFFFFFFFF)
 	{
-		if(parent==nullptr || !use_parent)
+		if(parent==NULL || !use_parent)
 		{
 			return false;
 		}
@@ -1140,7 +1137,7 @@ bool VHDFile::has_block(bool use_parent)
 	}
 	else
 	{
-		if(parent!=nullptr && use_parent)
+		if(parent!=NULL && use_parent)
 		{
 			parent->Seek(curr_offset);
 			return parent->has_block();
@@ -1182,12 +1179,13 @@ uint64 VHDFile::getRealSize(void)
 
 uint64 VHDFile::usedSize(void)
 {
-	uint64 offset_backup=curr_offset;
+	const uint64 offset_backup=curr_offset;
 
 	uint64 used_size=0;
 
 	for(uint64 i=0;i<dstsize;i+=blocksize)
 	{
+		curr_offset = i;
 		if(has_sector())
 		{
 			used_size+=blocksize;
@@ -1205,7 +1203,7 @@ bool VHDFile::has_sector(_i64 sector_size)
 	unsigned int bat_ref=big_endian(bat[block]);
 	if(bat_ref==0xFFFFFFFF)
 	{
-		if(parent!=nullptr)
+		if(parent!=NULL)
 		{
 			parent->Seek(curr_offset);
 			return parent->has_sector();
@@ -1381,7 +1379,7 @@ bool VHDFile::finish()
 		}
 	}
 
-	if(parent!=nullptr)
+	if(parent!=NULL)
 	{
 		if(!parent->finish())
 		{
@@ -1390,7 +1388,7 @@ bool VHDFile::finish()
 	}
 
 	CompressedFile* compfile = dynamic_cast<CompressedFile*>(file);
-	if(compfile!=nullptr)
+	if(compfile!=NULL)
 	{
 		if (compfile->finish())
 		{
@@ -1422,13 +1420,13 @@ VHDFile* VHDFile::getParent()
 
 bool VHDFile::isCompressed()
 {
-	return compressed_file!=nullptr;
+	return compressed_file!=NULL;
 }
 
 bool VHDFile::makeFull( _i64 fs_offset, IVHDWriteCallback* write_callback)
 {
 	FileWrapper devfile(this, fs_offset);
-	std::unique_ptr<IReadOnlyBitmap> bitmap_source;
+	std::auto_ptr<IReadOnlyBitmap> bitmap_source;
 
 	bitmap_source.reset(new ClientBitmap(backing_file->getFilename() + ".cbitmap"));
 
@@ -1436,7 +1434,7 @@ bool VHDFile::makeFull( _i64 fs_offset, IVHDWriteCallback* write_callback)
 	{
 		Server->Log("Error reading client bitmap. Falling back to reading bitmap from NTFS", LL_WARNING);
 
-		bitmap_source.reset(new FSNTFS(&devfile, IFSImageFactory::EReadaheadMode_None, false, nullptr));
+		bitmap_source.reset(new FSNTFS(&devfile, IFSImageFactory::EReadaheadMode_None, false, NULL));
 	}
 
 	if(bitmap_source->hasError())
@@ -1505,7 +1503,7 @@ bool VHDFile::makeFull( _i64 fs_offset, IVHDWriteCallback* write_callback)
 	}
 
 	delete parent;
-	parent = nullptr;
+	parent = NULL;
 
 	Server->Log("Writing new headers...", LL_INFO);
 
@@ -1516,7 +1514,7 @@ bool VHDFile::makeFull( _i64 fs_offset, IVHDWriteCallback* write_callback)
 	bat_offset = def_bat_offset;
 
 	if(!write_header(false) ||
-		!write_dynamicheader(nullptr, 0, "") ||
+		!write_dynamicheader(NULL, 0, "") ||
 		!write_footer() ||
 		!write_bat() )
 	{

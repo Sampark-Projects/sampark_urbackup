@@ -115,7 +115,7 @@ private:
 
 	std::vector<SFolderItem> saved_folder_items;
 
-	std::unique_ptr<FileClient> fc;
+	std::auto_ptr<FileClient> fc;
 	const std::string& server_token;
 
 	bool has_error;
@@ -141,8 +141,8 @@ private:
 	bool is_complete;
 	bool is_finished;
 	bool force_start;
-	std::unique_ptr<IMutex> mutex;
-	std::unique_ptr<ICondition> cond;
+	std::auto_ptr<IMutex> mutex;
+	std::auto_ptr<ICondition> cond;
 };
 
 int check_metadata();

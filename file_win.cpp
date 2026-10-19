@@ -639,7 +639,7 @@ namespace
 
 					attr_buf.resize((attrlist->last_vnc - attrlist->starting_vnc + 1) * vol_data.BytesPerCluster);
 
-					std::unique_ptr<IFsFile> dev(Server->openFileFromHandle(vol, "vol"));
+					std::auto_ptr<IFsFile> dev(Server->openFileFromHandle(vol, "vol"));
 					if (dev.get() == NULL)
 						return -1;
 
@@ -994,7 +994,7 @@ IFsFile::SSparseExtent File::nextSparseExtent()
 	return nextSparseExtent();
 }
 
-std::vector<IFsFile::SFileExtent> File::getFileExtents(int64 starting_offset, int64 block_size, bool& more_data, unsigned int flags)
+std::vector<IFsFile::SFileExtent> File::getFileExtents(int64 starting_offset, int64 block_size, bool& more_data)
 {
 	std::vector<IFsFile::SFileExtent> ret;
 

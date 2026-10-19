@@ -100,7 +100,7 @@ void ServerUpdate::update_client()
 
 			bool dl_ok = true;
 
-			std::unique_ptr<IFile> sig_file(Server->openFile("urbackup/" + curr.basename + ".sig2.new", MODE_WRITE));
+			std::auto_ptr<IFile> sig_file(Server->openFile("urbackup/" + curr.basename + ".sig2.new", MODE_WRITE));
 			if (sig_file.get() == NULL)
 			{
 				Server->Log("Error opening signature output file urbackup/" + curr.basename + ".sig2.new", LL_ERROR);
@@ -119,7 +119,7 @@ void ServerUpdate::update_client()
 			{
 				Server->Log("Downloading old signature...", LL_INFO);
 
-				std::unique_ptr<IFile> old_sig_file(Server->openFile("urbackup/" + curr.basename + ".sig.new", MODE_WRITE));
+				std::auto_ptr<IFile> old_sig_file(Server->openFile("urbackup/" + curr.basename + ".sig.new", MODE_WRITE));
 				if (old_sig_file.get() == NULL)
 				{
 					Server->Log("Error opening signature output file urbackup/" + curr.basename + ".sig.new", LL_ERROR);
@@ -141,7 +141,7 @@ void ServerUpdate::update_client()
 
 			Server->Log("Getting update file URL...", LL_INFO);
 			std::string update_url = url_fak->downloadString(curr_update_url + curr.basename + ".url", http_proxy, &errmsg);
-			std::unique_ptr<IFile> update_file;
+			std::auto_ptr<IFile> update_file;
 
 			if (update_url.empty())
 			{
@@ -192,16 +192,13 @@ void ServerUpdate::update_client()
 			}
 			else
 			{
-				if (sig_file.get() != NULL)
-				{
-					std::string del_fn = sig_file->getFilename();
-					sig_file.reset();
-					Server->deleteFile(del_fn);
-				}
+				std::string del_fn = sig_file->getFilename();
+				sig_file.reset();
+				Server->deleteFile(del_fn);
 
 				if (update_file.get() != NULL)
 				{
-					std::string del_fn = update_file->getFilename();
+					del_fn = update_file->getFilename();
 					update_file.reset();
 					Server->deleteFile(del_fn);
 				}
@@ -225,7 +222,7 @@ void ServerUpdate::update_server_version_info()
 	std::string errmsg;
 	Server->Log("Downloading server version info...", LL_INFO);
 
-	std::unique_ptr<IFile> server_version_info(Server->openFile("urbackup/server_version_info.properties.new", MODE_WRITE));
+	std::auto_ptr<IFile> server_version_info(Server->openFile("urbackup/server_version_info.properties.new", MODE_WRITE));
 
 	if(!server_version_info.get())
 	{
@@ -265,7 +262,7 @@ void ServerUpdate::update_dataplan_db()
 	std::string errmsg;
 	Server->Log("Downloading dataplan database...", LL_INFO);
 
-	std::unique_ptr<IFile> dataplan_db(Server->openFile("urbackup/dataplan_db.txt.new", MODE_WRITE));
+	std::auto_ptr<IFile> dataplan_db(Server->openFile("urbackup/dataplan_db.txt.new", MODE_WRITE));
 	if (!dataplan_db.get())
 	{
 		Server->Log("Error opening urbackup/dataplan_db.txt.new for writing", LL_ERROR);
@@ -307,7 +304,7 @@ void ServerUpdate::read_update_location()
 				&& urbackup_update_url[urbackup_update_url.size() - 1] != '/')
 				urbackup_update_url += "/";
 
-			urbackup_update_url += "2.4.x/";
+			urbackup_update_url += "2.5.x/";
 		}
 	}
 }

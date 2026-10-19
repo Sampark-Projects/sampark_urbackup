@@ -158,8 +158,7 @@ bool FullFileBackup::doFileBackup()
 
 	getTokenFile(fc, hashed_transfer, false);
 
-	if (!backup_dao->newFileBackup(0, clientid, backuppath_single, 0, 
-		Server->getTimeMS() - indexing_start_time, group, 0, 0))
+	if (!backup_dao->newFileBackup(0, clientid, backuppath_single, 0, Server->getTimeMS() - indexing_start_time, group))
 	{
 		ServerLogger::Log(logid, "Error creating new backup row in database", LL_ERROR);
 		has_early_error = true;
@@ -224,7 +223,7 @@ bool FullFileBackup::doFileBackup()
 
 	std::string last_backuppath;
 	std::string last_backuppath_complete;
-	std::unique_ptr<ServerDownloadThreadGroup> server_download(new ServerDownloadThreadGroup(fc, NULL, backuppath,
+	std::auto_ptr<ServerDownloadThreadGroup> server_download(new ServerDownloadThreadGroup(fc, NULL, backuppath,
 		backuppath_hashes, last_backuppath, last_backuppath_complete,
 		hashed_transfer, save_incomplete_files, clientid, clientname, clientsubname,
 		use_tmpfiles, tmpfile_path, server_token, use_reflink,
@@ -268,6 +267,13 @@ bool FullFileBackup::doFileBackup()
 			bool b=list_parser.nextEntry(buffer[i], cf, &extra_params);
 			if(b)
 			{
+				if (folder_files.empty())
+				{
+					ServerLogger::Log(logid, "File list is corrupted (folder_files is empty)", LL_ERROR);
+					has_read_error = true;
+					break;
+				}
+
 				FileMetadata metadata;
 				metadata.read(extra_params);
 
@@ -429,7 +435,7 @@ bool FullFileBackup::doFileBackup()
 							}							
 						}
 					}
-					else
+					else if(!folder_files.empty())
 					{
 						folder_files.pop();
 
@@ -451,7 +457,7 @@ bool FullFileBackup::doFileBackup()
 							}
 							else
 							{
-								ServerLogger::Log(logid, "Stopping shadowcopy \""+t+"\".", LL_DEBUG);
+								ServerLogger::Log(logid, "Stoping shadowcopy \""+t+"\".", LL_DEBUG);
 								server_download->addToQueueStopShadowcopy(t);
 							}							
 						}
@@ -511,7 +517,7 @@ bool FullFileBackup::doFileBackup()
 					else if(extra_params.find("special")!=extra_params.end())
 					{
 						std::string touch_path = backuppath + convertToOSPathFromFileClient(curr_os_path)+os_file_sep()+osspecific_name;
-						std::unique_ptr<IFile> touch_file(Server->openFile(os_file_prefix(touch_path), MODE_WRITE));
+						std::auto_ptr<IFile> touch_file(Server->openFile(os_file_prefix(touch_path), MODE_WRITE));
 						if(touch_file.get()==NULL)
 						{
 							ServerLogger::Log(logid, "Error touching file at \""+touch_path+"\". " + systemErrorInfo(), LL_ERROR);
@@ -717,6 +723,7 @@ bool FullFileBackup::doFileBackup()
 	script_dir=false;
 	has_read_error = false;
 	size_t download_max_ok_id = server_download->getMaxOkId();
+	depth = 0;
 	while( (read=tmp_filelist->Read(buffer, 4096, &has_read_error))>0 )
 	{
 		if (has_read_error)
@@ -746,16 +753,21 @@ bool FullFileBackup::doFileBackup()
 							last_modified_offsets.push(std::string::npos);
 						}
 
-						if(cf.name=="urbackup_backup_scripts")
+						if(depth == 0 && cf.name=="urbackup_backup_scripts")
 						{
 							script_dir=true;
 						}
+
+						++depth;
 					}					
 					else
 					{
+						--depth;
+
 						if(!script_dir
 							&& metadata_download_thread.get()!=NULL
 							&& !metadata_download_thread->hasMetadataId(line+1)
+							&& !last_modified_offsets.empty()
 							&& last_modified_offsets.top()!= std::string::npos)
 						{
 							if (line < max_line)
@@ -798,8 +810,11 @@ bool FullFileBackup::doFileBackup()
 							writeFileItem(clientlist, cf, &output_offset);
 						}
 
-						script_dir=false;
-						last_modified_offsets.pop();
+						if(depth==0)
+							script_dir=false;
+
+						if(!last_modified_offsets.empty())
+							last_modified_offsets.pop();
 					}					
 				}
 				else if(!cf.isdir && 
@@ -895,7 +910,7 @@ bool FullFileBackup::doFileBackup()
 				c_has_error = true;
 		}
 
-		std::unique_ptr<IFile> sync_f;
+		std::auto_ptr<IFile> sync_f;
 		if (!c_has_error)
 		{
 			sync_f.reset(Server->openFile(os_file_prefix(backuppath_hashes + os_file_sep() + sync_fn), MODE_WRITE));

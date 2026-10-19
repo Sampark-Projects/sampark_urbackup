@@ -71,8 +71,6 @@ public:
 		int resumed;
 		int complete;
 		int id;
-		int incremental_ref;
-		int deletion_protected;
 	};
 	struct SMountedImage
 	{
@@ -123,13 +121,14 @@ public:
 	std::vector<std::string> getClientMovedFrom(const std::string& from_name);
 	CondString getSetting(int clientid, const std::string& key);
 	int hasFileBackups(int clientid);
-	void insertSetting(const std::string& key, const std::string& value, int clientid);
+	void insertSetting(const std::string& key, const std::string& value, const std::string& value_client, int use, int64 use_lm, int clientid);
 	void updateSetting(const std::string& value, const std::string& key, int clientid);
+	void updateSettingAll(const std::string& value, const std::string& value_client, int use, int64 use_lm, const std::string& key, int clientid);
 	CondString getMiscValue(const std::string& tkey);
 	void addMiscValue(const std::string& tkey, const std::string& tvalue);
 	void delMiscValue(const std::string& tkey);
 	void setClientUsedFilebackupSize(int64 bytes_used_files, int id);
-	bool newFileBackup(int incremental, int clientid, const std::string& path, int resumed, int64 indexing_time_ms, int tgroup, int incremental_ref, int deletion_protected);
+	bool newFileBackup(int incremental, int clientid, const std::string& path, int resumed, int64 indexing_time_ms, int tgroup);
 	void updateFileBackupRunning(int backupid);
 	void setFileBackupDone(int backupid);
 	void setFileBackupSynced(int backupid);
@@ -190,7 +189,7 @@ public:
 	void updateClientWithHashes(int with_hashes, int clientid);
 	//@-SQLGenFunctionsEnd
 
-	void updateOrInsertSetting(int clientid, const std::string& key, const std::string& value);
+	void updateOrInsertSetting(int clientid, const std::string& key, const std::string& value, const std::string& value_client, int use, int64 use_lm);
 
 private:
 	ServerBackupDao(ServerBackupDao& other) {}
@@ -224,6 +223,7 @@ private:
 	IQuery* q_hasFileBackups;
 	IQuery* q_insertSetting;
 	IQuery* q_updateSetting;
+	IQuery* q_updateSettingAll;
 	IQuery* q_getMiscValue;
 	IQuery* q_addMiscValue;
 	IQuery* q_delMiscValue;

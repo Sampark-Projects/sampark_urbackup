@@ -582,7 +582,7 @@ _u32 FileClient::getLocalIP(void)
         return local_ip;
 }
 
-_u32 FileClient::GetServers(bool start, const std::vector<SAddrHint> &addr_hints)
+_u32 FileClient::GetServers(bool start, const std::vector<SAddrHint> &addr_hints, GetServersErrors& errors)
 {
         if(start)
         {
@@ -610,7 +610,17 @@ _u32 FileClient::GetServers(bool start, const std::vector<SAddrHint> &addr_hints
 					int rc = sendto(udpsocks[i].udpsock, &ch, 1, 0, (sockaddr*)&addr_udp, sizeof(addr_udp));
 					if (rc == -1)
 					{
-						Server->Log("Sending broadcast failed!", LL_ERROR);
+						const std::string iface = ipToString(udpsocks[i]);
+						if (errors.broadcast_error_ipv4.find(iface) == errors.broadcast_error_ipv4.end())
+						{
+							Server->Log("Sending broadcast failed! iface " + iface, LL_ERROR);
+							errors.broadcast_error_ipv4.insert(iface);
+						}
+					}
+					else if(!errors.broadcast_error_ipv4.empty())
+					{				
+						const std::string iface = ipToString(udpsocks[i]);
+						errors.broadcast_error_ipv4.erase(iface);
 					}
 				}
 				else
@@ -620,14 +630,29 @@ _u32 FileClient::GetServers(bool start, const std::vector<SAddrHint> &addr_hints
 					addr_udp.sin6_port = htons(UDP_PORT);
 					if (inet_pton(AF_INET6, multicast_group, &addr_udp.sin6_addr) != 1)
 					{
-						Server->Log("inet_pton failed", LL_ERROR);
+						const std::string iface = ipToString(udpsocks[i]);
+						if (errors.broadcast_error_ipv6.find(iface) == errors.broadcast_error_ipv6.end())
+						{
+							Server->Log("inet_pton failed iface " + iface, LL_ERROR);
+							errors.broadcast_error_ipv6.insert(iface);
+						}
 					}
 
 					char ch = ID_PING;
 					int rc = sendto(udpsocks[i].udpsock, &ch, 1, 0, (sockaddr*)&addr_udp, sizeof(addr_udp));
 					if (rc == -1)
 					{
-						Server->Log("Sending broadcast failed! (ipv6)", LL_ERROR);
+						const std::string iface = ipToString(udpsocks[i]);
+						if (errors.broadcast_error_ipv6.find(iface) == errors.broadcast_error_ipv6.end())
+						{
+							Server->Log("Sending broadcast failed! (ipv6) iface " + ipToString(udpsocks[i]), LL_ERROR);
+							errors.broadcast_error_ipv6.insert(iface);
+						}
+					}
+					else if(!errors.broadcast_error_ipv6.empty())
+					{
+						std::string iface = ipToString(udpsocks[i]);
+						errors.broadcast_error_ipv6.erase(iface);
 					}
 				}
 			}
@@ -1077,7 +1102,7 @@ bool FileClient::Reconnect(void)
 	_u32 hash_r;
 	MD5 hash_func;
 	IFile* file = backing_file;
-	std::unique_ptr<SparseFile> sparse_file;
+	std::auto_ptr<SparseFile> sparse_file;
 
 	char* buf = dl_buf;
 
@@ -1115,6 +1140,12 @@ bool FileClient::Reconnect(void)
 			if (rc != 0)
 			{
 				rc += dl_off;
+			}
+
+			if (firstpacket && dl_off + rc > 0 && dl_off + rc < 10 && buf[0] == ID_ERR)
+			{
+				Server->Log("Received ID_ERR from server rc=" + convert(rc)+". Reconnecting...", LL_WARNING);
+				rc = 0;
 			}
 		}
 		else

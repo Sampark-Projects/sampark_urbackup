@@ -18,7 +18,6 @@
 #include "server_settings.h"
 
 #include <memory>
-#include <mutex>
 #include "server_log.h"
 
 class ServerVHDWriter;
@@ -86,17 +85,17 @@ struct SRunningBackup
 {
 	SRunningBackup()
 		: backup(NULL), ticket(ILLEGAL_THREADPOOL_TICKET),
-		group(c_group_default), running(false)
+		group(c_group_default), client_group(-1)
 	{
 
 	}
 
 
 	Backup* backup;
-	bool running;
 	THREADPOOL_TICKET ticket;
 	int group;
 	std::string letter;
+	int client_group;
 };
 
 struct SRunningRestore
@@ -110,19 +109,6 @@ struct SRunningRestore
 	logid_t log_id;
 	int64 status_id;
 	int64 restore_id;
-	int64 last_active;
-};
-
-struct SRunningLocalBackup
-{
-	SRunningLocalBackup(logid_t log_id, int64 status_id, int backupid)
-		: log_id(log_id), status_id(status_id), backupid(backupid),
-		last_active(Server->getTimeMS())
-	{}
-
-	logid_t log_id;
-	int64 status_id;
-	int backupid;
 	int64 last_active;
 };
 
@@ -166,14 +152,14 @@ public:
 			internet_connection(false)
 		{}
 
-		std::unique_ptr<IPipe> conn;
+		std::auto_ptr<IPipe> conn;
 		bool internet_connection;
 	};
 
-	bool sendClientMessage(const std::string &msg, const std::string &retok, const std::string &errmsg, unsigned int timeout, bool logerr=true, int max_loglevel=LL_ERROR, bool *retok_err=NULL, std::string* retok_str=NULL, SConnection* conn=NULL, bool do_encrypt = true);
-	bool sendClientMessageRetry(const std::string &msg, const std::string &retok, const std::string &errmsg, unsigned int timeout, size_t retry=0, bool logerr=true, int max_loglevel=LL_ERROR, bool *retok_err=NULL, std::string* retok_str=NULL, bool do_encrypt = true);
-	std::string sendClientMessage(const std::string &msg, const std::string &errmsg, unsigned int timeout, bool logerr=true, int max_loglevel=LL_ERROR, SConnection* conn=NULL, bool do_encrypt = true);
-	std::string sendClientMessageRetry(const std::string &msg, const std::string &errmsg, unsigned int timeout, size_t retry=0, bool logerr=true, int max_loglevel=LL_ERROR, unsigned int timeout_after_first=0, bool do_encrypt=true);
+	bool sendClientMessage(const std::string &msg, const std::string &retok, const std::string &errmsg, unsigned int timeout, bool logerr=true, int max_loglevel=LL_ERROR, bool *retok_err=NULL, std::string* retok_str=NULL, SConnection* conn=NULL, bool do_encrypt = true, const unsigned int connect_timeout = 10000, const logid_t override_log_id = logid_t());
+	bool sendClientMessageRetry(const std::string &msg, const std::string &retok, const std::string &errmsg, unsigned int timeout, size_t retry=0, bool logerr=true, int max_loglevel=LL_ERROR, bool *retok_err=NULL, std::string* retok_str=NULL, bool do_encrypt = true, const logid_t override_log_id = logid_t());
+	std::string sendClientMessage(const std::string &msg, const std::string &errmsg, unsigned int timeout, bool logerr=true, int max_loglevel=LL_ERROR, SConnection* conn=NULL, bool do_encrypt = true, const unsigned int connect_timeout = 10000, const logid_t override_log_id = logid_t());
+	std::string sendClientMessageRetry(const std::string &msg, const std::string &errmsg, unsigned int timeout, size_t retry=0, bool logerr=true, int max_loglevel=LL_ERROR, unsigned int timeout_after_first=0, bool do_encrypt=true, const logid_t override_log_id = logid_t());
 	void sendToPipe(const std::string &msg);
 
 	bool createDirectoryForClient();
@@ -189,16 +175,16 @@ public:
 	static int getNumberOfRunningBackups(void);
 	static int getNumberOfRunningFileBackups(void);
 	static bool tooManyClients(IDatabase *db, const std::string &clientname, ServerSettings *server_settings);
-	static int getClientID(IDatabase *db, const std::string &clientname, ServerSettings *server_settings, 
-		bool *new_client, std::string* authkey=NULL, int* client_group=NULL, std::string* perm_uid=NULL);
+	static int getClientID(IDatabase *db, const std::string &clientname, ServerSettings *server_settings, bool *new_client, std::string* authkey=NULL, int* client_group=NULL);
 
-	IPipe *getClientCommandConnection(ServerSettings* server_settings, int timeoutms=10000, std::string* clientaddr=NULL, bool do_encrypt=true);
+	IPipe *getClientCommandConnection(ServerSettings* server_settings, int timeoutms=10000, std::string* clientaddr=NULL, bool do_encrypt=true, bool allow_reauth=false, bool* require_reauth = NULL);
 
 	virtual IPipe * new_fileclient_connection(void);
+	virtual IPipe* new_fileclient_connection(ServerSettings* server_settings);
 
 	virtual bool handle_not_enough_space(const std::string &path);
 
-	virtual bool handle_not_enough_space(const std::string &path, logid_t logid);
+	virtual bool handle_not_enough_space(const std::string &path, logid_t logid, ServerSettings& server_settings);
 
 	static IFsFile *getTemporaryFileRetry(bool use_tmpfiles, const std::string& tmpfile_path, logid_t logid);
 
@@ -210,7 +196,7 @@ public:
 
 	_u32 getClientFilesrvConnection(FileClient *fc, ServerSettings* server_settings, int timeoutms=10000);
 
-	bool getClientChunkedFilesrvConnection(std::unique_ptr<FileClientChunked>& fc_chunked,
+	bool getClientChunkedFilesrvConnection(std::auto_ptr<FileClientChunked>& fc_chunked,
 		ServerSettings* server_settings, FileClientChunked::NoFreeSpaceCallback* no_free_space_callback, int timeoutms=10000);
 
 	bool isOnInternetConnection()
@@ -259,15 +245,9 @@ public:
 
 	static void cleanupRestoreShare(int clientid, std::string restore_identity);
 
-	void updateLocalBackup(int64 status_id, bool success, bool should_backoff);
-
-	bool removeRestore(int64 restore_id);
-
-	bool removeLocalBackup(int64 status_id);
+	bool finishRestore(int64 restore_id);
 
 	bool updateRestoreRunning(int64 restore_id);
-
-	bool updateLocalBackupRunning(int backupid);
 
 	static bool startBackupBarrier(int64 timeout_seconds);
 
@@ -282,8 +262,6 @@ public:
 	static std::string getClientIpStr(const std::string& clientname);
 
 	void setConnectionMetered(bool b);
-
-	void setWindowsLocked(bool b);
 
 	void forceReauthenticate();
 
@@ -310,7 +288,7 @@ private:
 	void sendClientBackupIncrIntervall(void);
 	void sendSettings(void);
 	bool getClientSettings(bool& doesnt_exist);
-	bool updateClientSetting(const std::string &key, const std::string &value, int use, int64 use_last_modified);
+	bool updateClientSetting(const std::string &key, const std::string &value, int use, int64 use_last_modified, bool allow_use_mod);
 	void sendClientLogdata(void);
 	bool isRunningImageBackup(const std::string& letter);
 	bool isImageGroupQueued(const std::string& letter, bool full);
@@ -340,23 +318,51 @@ private:
 
 	void timeoutRestores();
 
-	void timeoutLocalBackups();
-
 	void cleanupShares();
 	static void cleanupShare(SShareCleanup& tocleanup);
 
 	void finishFailedRestore(std::string restore_identity, logid_t log_id, int64 status_id, int64 restore_id);
 
-	void finishLocalBackup(bool success, logid_t log_id, int64 status_id, int backupid);
-
-	bool isLocalBackupRunning(int64 status_id);
-
-	bool isBackupFinished(const SRunningBackup& rb);
 
 	bool renameClient(const std::string& clientuid);
 	void updateVirtualClients();
 
 	bool checkClientName(bool& continue_start_backups);
+
+	void startStartup();
+	void finishStartup();
+
+	int numRunningClientGroupJobs(const int group_id);
+
+	void addRunningClientGroupJob(const int group_id);
+
+	void subRunningClientGroupJob(const int group_id);
+
+	class ScopedStartStartup
+	{
+		ClientMain* cm;
+	public:
+
+		ScopedStartStartup(ClientMain* cm)
+			:cm(cm)
+		{
+			cm->startStartup();
+		}
+
+		~ScopedStartStartup()
+		{
+			if (cm != NULL)
+				cm->finishStartup();
+		}
+
+		void finishStartup()
+		{
+			if(cm!=NULL)
+				cm->finishStartup();
+
+			cm = NULL;
+		}
+	};
 
 
 	struct SPathComponents
@@ -384,9 +390,8 @@ private:
 	static IMutex *tmpfile_mutex;
 
 	int clientid;
-	std::string perm_uid;
 
-	std::unique_ptr<ServerSettings> server_settings;
+	std::auto_ptr<ServerSettings> server_settings;
 
 	IQuery *q_update_lastseen;
 	IQuery *q_update_setting;
@@ -412,7 +417,6 @@ private:
 	SProtocolVersions protocol_versions;
 	volatile bool internet_connection;
 	volatile bool connection_metered;
-	std::atomic<bool> windows_locked;
 	int update_version;
 	std::string all_volumes;
 	std::string all_nonusb_volumes;
@@ -470,11 +474,8 @@ private:
 	std::string curr_server_token;
 	bool needs_authentification;
 
-	std::unique_ptr<IMutex> restore_mutex;
+	std::auto_ptr<IMutex> restore_mutex;
 	std::vector<SRunningRestore> running_restores;
-
-	std::mutex local_backup_mutex;
-	std::vector<SRunningLocalBackup> running_local_backups;
 
 	std::vector< std::map<ImageBackup*, bool>  > running_image_groups;
 
@@ -489,4 +490,11 @@ private:
 
 	static IMutex* client_uid_reset_mutex;
 	static ICondition* client_uid_reset_cond;
+
+	static IMutex* client_startup_mutex;
+	static ICondition* client_startup_cond;
+	static std::set<std::string> client_startup;
+
+	static IMutex* client_group_job_mutex;
+	static std::map<int, int> client_group_jobs;
 };

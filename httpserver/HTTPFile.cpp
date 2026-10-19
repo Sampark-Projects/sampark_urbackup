@@ -45,14 +45,14 @@ void CHTTPFile::operator ()(void)
 	Server->Log("Sending file \""+filename+"\"", LL_DEBUG);
 	IFile *fp=Server->openFile(filename);
 
-	if( fp==nullptr )
+	if( fp==NULL )
 	{
 		const std::vector<std::string> idxf=IndexFiles::getIndexFiles();
 		for(size_t i=0;i<idxf.size();++i)
 		{
 			std::string fn=filename+"/"+idxf[i];
 			fp=Server->openFile(fn);
-			if( fp!=nullptr )
+			if( fp!=NULL )
 			{
 				filename=fn;
 				break;
@@ -62,7 +62,7 @@ void CHTTPFile::operator ()(void)
 
 	std::string ct=getContentType();
 
-	if( fp==nullptr )
+	if( fp==NULL )
 	{
 		output->Write("HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 22\r\n\r\nSorry. File not found.");
 		return;

@@ -54,6 +54,7 @@ std::vector<std::string> getSettingsList(void)
 	ret.push_back("allow_log_view");
 	ret.push_back("allow_overwrite");
 	ret.push_back("allow_tray_exit");
+	ret.push_back("allow_all_clients_restore");
 	ret.push_back("image_letters");
 	ret.push_back("internet_server");
 	ret.push_back("internet_server_port");
@@ -61,7 +62,6 @@ std::vector<std::string> getSettingsList(void)
 	ret.push_back("internet_authkey");
 	ret.push_back("internet_speed");
 	ret.push_back("local_speed");
-	ret.push_back("internet_client_enabled");
 	ret.push_back("internet_image_backups");
 	ret.push_back("internet_full_file_backups");
 	ret.push_back("internet_encrypt");
@@ -111,11 +111,8 @@ std::vector<std::string> getSettingsList(void)
 	ret.push_back("hash_threads");
 	ret.push_back("client_hash_threads");
 	ret.push_back("image_compress_threads");
-	ret.push_back("ransomware_canary_paths");
-	ret.push_back("backup_dest_url");
-	ret.push_back("backup_dest_params");
-	ret.push_back("pause_if_windows_unlocked");
-	ret.push_back("backup_unlocked_window");
+	ret.push_back("client_rename_detection");
+	ret.push_back("max_running_jobs_per_client_group");
 	return ret;
 }
 
@@ -165,8 +162,6 @@ std::vector<std::string> getClientMergableSettingsList()
 	ret.push_back("image_letters");
 	ret.push_back("vss_select_components");
 	ret.push_back("archive");
-	ret.push_back("ransomware_canary_paths");
-	ret.push_back("backup_dest_params");
 	return ret;
 }
 
@@ -206,11 +201,9 @@ std::vector<std::string> getOnlyServerClientSettingsList(void)
 	ret.push_back("alert_params");
 	ret.push_back("archive");
 	ret.push_back("client_settings_tray_access_pw");
-	ret.push_back("ransomware_canary_paths");
-	ret.push_back("backup_dest_url");
-	ret.push_back("backup_dest_params");
-	ret.push_back("backup_unlocked_window");
-	ret.push_back("pause_if_windows_unlocked");
+	ret.push_back("client_rename_detection");
+	ret.push_back("allow_all_clients_restore");
+	ret.push_back("max_running_jobs_per_client_group");
 	return ret;
 }
 
@@ -238,7 +231,6 @@ std::vector<std::string> getGlobalSettingsList(void)
 	ret.push_back("no_images");
 	ret.push_back("no_file_backups");
 	ret.push_back("autoshutdown");
-	ret.push_back("startup_cleanup");
 	ret.push_back("download_client");
 	ret.push_back("autoupdate_clients");
 	ret.push_back("max_sim_backups");
@@ -261,6 +253,7 @@ std::vector<std::string> getGlobalSettingsList(void)
 	ret.push_back("update_dataplan_db");
 	ret.push_back("internet_expect_endpoint");
 	ret.push_back("internet_server_bind_port");
+	ret.push_back("restore_authkey");
 	return ret;
 }
 

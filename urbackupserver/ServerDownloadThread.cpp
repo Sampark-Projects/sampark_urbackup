@@ -1334,7 +1334,7 @@ SPatchDownloadFiles ServerDownloadThread::preparePatchDownloadFiles( const SQueu
 	std::string hashpath_old=last_backuppath+os_file_sep()+".hashes"+os_file_sep()+FileBackup::convertToOSPathFromFileClient(cfn_short);
 	std::string filepath_old=last_backuppath+os_file_sep()+FileBackup::convertToOSPathFromFileClient(cfn_short);
 
-	std::unique_ptr<IFsFile> file_old(Server->openFile(os_file_prefix(filepath_old), MODE_READ));
+	std::auto_ptr<IFsFile> file_old(Server->openFile(os_file_prefix(filepath_old), MODE_READ));
 
 	if(file_old.get()==NULL)
 	{
@@ -1373,7 +1373,7 @@ SPatchDownloadFiles ServerDownloadThread::preparePatchDownloadFiles( const SQueu
 		cfn=server_token+"|"+cfn;
 	}
 
-	std::unique_ptr<IFile> hashfile_old(Server->openFile(os_file_prefix(hashpath_old), MODE_READ));
+	std::auto_ptr<IFile> hashfile_old(Server->openFile(os_file_prefix(hashpath_old), MODE_READ));
 
 	dlfiles.delete_chunkhashes=false;
 	if( (hashfile_old.get()==NULL ||
@@ -1416,7 +1416,7 @@ bool ServerDownloadThread::start_shadowcopy(std::string path)
 	}
 
 	std::string ret = client_main->sendClientMessageRetry("START SC \"" + path + "\"#token=" + server_token,
-		"Referencing snapshot on \"" + clientname + "\" for path \"" + path + "\" failed", 120000, 10, true, 2, 10000);
+		"Referencing snapshot on \"" + clientname + "\" for path \"" + path + "\" failed", 120000, 10, true, 2, 10000, true, logid);
 
 	if (ret != "DONE")
 	{
@@ -1474,7 +1474,8 @@ bool ServerDownloadThread::stop_shadowcopy(std::string path)
 	do
 	{
 		std::string ret = client_main->sendClientMessageRetry("STOP SC \"" + path + "\"#token=" + server_token, 
-			"Removing snapshot on \"" + clientname + "\" for path \"" + path+"\" failed", 120000, 10, true, 2, 10000);
+			"Removing snapshot on \"" + clientname + "\" for path \"" + path+"\" failed", 120000, 10, 
+			true, 2, 10000, true, logid);
 
 		in_use = false;
 
@@ -1618,7 +1619,8 @@ bool ServerDownloadThread::isAllDownloadsOk()
 bool ServerDownloadThread::logScriptOutput(std::string cfn, const SQueueItem &todl, std::string& sha_dig, int64 script_start_times, bool& hash_file)
 {
 	std::string script_output = client_main->sendClientMessageRetry("SCRIPT STDERR "+cfn,
-		"Error getting script output for command \""+todl.fn+"\"", 120000, 10, true);
+		"Error getting script output for command \""+todl.fn+"\"", 120000, 10, true,
+		LL_ERROR, 0, true, logid);
 
 	if(script_output=="err")
 	{
@@ -1821,7 +1823,7 @@ bool ServerDownloadThread::logScriptOutput(std::string cfn, const SQueueItem &to
 								}
 								else
 								{
-									std::unique_ptr<IFile> touch_file(Server->openFile(os_file_prefix(backuppath + os_path), MODE_WRITE));
+									std::auto_ptr<IFile> touch_file(Server->openFile(os_file_prefix(backuppath + os_path), MODE_WRITE));
 									if (touch_file.get() == NULL)
 									{
 										ServerLogger::Log(logid, "Error touching TAR special file at \"" + backuppath + os_path + "\"", LL_ERROR);
@@ -2030,7 +2032,8 @@ std::string ServerDownloadThread::tarFnToOsPath(const std::string & tar_path)
 
 void ServerDownloadThread::logVssLogdata()
 {
-	std::string vsslogdata = client_main->sendClientMessageRetry("GET VSSLOG", "Getting snapshot operation log data from client failed", 10000, 10, true, LL_WARNING);
+	std::string vsslogdata = client_main->sendClientMessageRetry("GET VSSLOG", "Getting snapshot operation log data from client failed",
+		 10000, 10, true, LL_WARNING, 0, true, logid);
 
 	if (!vsslogdata.empty() && vsslogdata != "ERR")
 	{

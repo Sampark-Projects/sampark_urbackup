@@ -156,7 +156,7 @@ _u32 FileClientChunked::GetFile(std::string remotefn, _i64& filesize_out, int64 
 
 	if(!queued_fcs.empty())
 	{
-		std::unique_ptr<FileClientChunked> next(queued_fcs.front());
+		std::auto_ptr<FileClientChunked> next(queued_fcs.front());
 
 		queued_fcs.pop_front();
 
@@ -312,7 +312,7 @@ _u32 FileClientChunked::GetFile(std::string remotefn, _i64& filesize_out, int64 
 				}
 
 				while (curr_sparse_extent.offset!=-1
-					&& next_chunk*c_checkpoint_dist < curr_sparse_extent.offset)
+					&& (next_chunk + 1)*c_checkpoint_dist > curr_sparse_extent.offset + curr_sparse_extent.size )
 				{
 					curr_sparse_extent = extent_iterator->nextExtent();
 				}
@@ -608,6 +608,13 @@ _u32 FileClientChunked::GetFile(std::string remotefn, _i64& filesize_out, int64 
 		{
 			buf = stack_buf;
 			rc = getPipe()->Read(buf, BUFFERSIZE, 0);
+
+			if (initial_read && rc > 0 && rc < 10 && buf[0] == ID_ERR)
+			{
+				Server->Log("Received ID_ERR from server fc_chunked rc=" + convert(rc) + ". Reconnecting...", LL_WARNING);
+				rc = 0;
+				flush_rc = ERR_ERROR;
+			}
 		}
 
 		initial_read = false;
@@ -1577,7 +1584,7 @@ void FileClientChunked::writePatch(_i64 pos, unsigned int length, char *buf, boo
 
 		if(last || patch_buf_pos==c_chunk_size || length==0)
 		{
-			writePatchInt(patch_buf_start, patch_buf_pos,  patch_buf);
+			writePatchInt(patch_buf_start, patch_buf_pos,  patch_buf, last);
 			patch_buf_pos=0;
 		}
 	}
@@ -1585,7 +1592,17 @@ void FileClientChunked::writePatch(_i64 pos, unsigned int length, char *buf, boo
 	{
 		if(patch_buf_pos>0)
 		{
-			writePatchInt(patch_buf_start, patch_buf_pos, patch_buf);
+			if (buf!=NULL && length>0 && patch_buf_pos < c_chunk_size && pos == patch_buf_start + patch_buf_pos)
+			{
+				const unsigned int towrite = (std::min)(c_chunk_size - patch_buf_pos, length);
+				memcpy(&patch_buf[patch_buf_pos], buf, towrite);
+				patch_buf_pos += towrite;
+				length -= towrite;
+				buf += towrite;
+				pos += towrite;
+			}
+
+			writePatchInt(patch_buf_start, patch_buf_pos, patch_buf, last);
 			patch_buf_pos=0;
 		}
 
@@ -1599,14 +1616,30 @@ void FileClientChunked::writePatch(_i64 pos, unsigned int length, char *buf, boo
 			}
 			else
 			{
-				writePatchInt(pos, length, buf);
+				if (!last && length % c_chunk_size != 0)
+				{
+					const unsigned int wchunks = length / c_chunk_size;
+					const unsigned int towrite = wchunks * c_chunk_size;
+					writePatchInt(pos, towrite, buf, last);
+
+					const unsigned int wleft = length - towrite;
+					memcpy(&patch_buf[patch_buf_pos], buf + towrite, wleft);
+					patch_buf_start = pos + towrite;
+					patch_buf_pos += wleft;
+				}
+				else
+				{
+					writePatchInt(pos, length, buf, last);
+				}
 			}
 		}
 	}
 }
 
-void FileClientChunked::writePatchInt(_i64 pos, unsigned int length, char *buf)
+void FileClientChunked::writePatchInt(_i64 pos, unsigned int length, char *buf, const bool last)
 {
+	assert(pos % c_chunk_size == 0);
+	assert(last || length % c_chunk_size == 0);
 	const unsigned int plen=sizeof(_i64)+sizeof(unsigned int);
 	char pd[plen];
 	_i64 pos_tmp = little_endian(pos);
@@ -2300,28 +2333,38 @@ void FileClientChunked::adjustOutputFilesizeOnFailure( _i64& filesize_out )
 
 		if(m_hashoutput!=NULL)
 		{
-			if(m_hashoutput->Seek(m_hashoutput->Size()) &&
-				m_chunkhashes->Seek(m_hashoutput->Size()))
+			const int64 max_hashoutput_size = get_hashdata_size(filesize_out);
+
+			int64 cpos = m_hashoutput->Size();
+
+			if( cpos < max_hashoutput_size &&
+				m_chunkhashes->Size() > cpos &&
+				m_hashoutput->Seek(cpos) &&
+				m_chunkhashes->Seek(cpos))
 			{
 				std::vector<char> buffer;
-				buffer.resize(4096);
+				buffer.resize(32768);
 
 				_u32 read;
 				do 
 				{
-					bool has_error;
-					read = m_chunkhashes->Read(&buffer[0], 4096, &has_error);
+					bool has_error = false;
+					size_t toread = (std::min)(static_cast<size_t>(max_hashoutput_size - cpos), buffer.size());
+					read = m_chunkhashes->Read(buffer.data(), toread, &has_error);
+
+					cpos+=read;
 
 					if(has_error)
 					{
 						Server->Log("Error reading from chunkhashes file. Copying hashdata failed. "+os_last_error_str(), LL_ERROR);
+						break;
 					}
 
 					writeFileRepeat(m_hashoutput, buffer.data(), read);	
 
-				} while (read==4096);
+				} while (read==buffer.size() && cpos<max_hashoutput_size);
 
-				assert(m_hashoutput->Size() == m_chunkhashes->Size());
+				assert(m_hashoutput->Size() == max_hashoutput_size);
 			}
 			else
 			{
@@ -2455,3 +2498,4 @@ _i64 FileClientChunked::getRealTransferredBytes()
 	}
 	return tbytes;
 }
+

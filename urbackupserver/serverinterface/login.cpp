@@ -145,6 +145,17 @@ ACTION_IMPL(login)
 		has_session=true;
 	}
 
+	const std::string remote_addr = helper.remoteAddr();
+
+	Helper::IpLogin ipLogin(remote_addr);
+
+	if (helper.rateLimited(remote_addr))
+	{
+		ret.set("error", JSON::Value(3));
+		helper.Write(ret.stringify(false));
+		return;
+	}
+
 	std::string username=POST["username"];
 	if(!username.empty())
 	{
@@ -180,7 +191,7 @@ ACTION_IMPL(login)
 			else
 			{
 				logFailedLogin(helper, PARAMS, username, LoginMethod_Webinterface);
-				Server->wait(1000);
+				helper.addToRateLimit(remote_addr);
 				ret.set("error", JSON::Value(2));
 			}
 		}
@@ -192,7 +203,7 @@ ACTION_IMPL(login)
 	else
 	{
 		ret.set("lang", helper.getLanguage());
-		bool ldap_enabled = helper.ldapEnabled();
+		const bool ldap_enabled = helper.ldapEnabled();
 		db_results res=db->Read("SELECT name FROM settings_db.si_users LIMIT 2");
 		if( !res.empty() || ldap_enabled)
 		{
@@ -201,31 +212,36 @@ ACTION_IMPL(login)
 			{
 				ret.set("ldap_enabled", true);
 			}
-			if(res.size()==1)
+			if(res.size()==1 && helper.allowUserEnumeration())
 			{
 				ret.set("admin_only", res[0]["name"]);
 			}
 		}
 		else
 		{
-			ret.set("success", JSON::Value(true) );
-			if(has_session==false)
+			db_results res_users_c = db->Read("SELECT COUNT(*) AS c FROM settings_db.si_users");
+			if (!res_users_c.empty()
+				&& watoi(res_users_c[0]["c"]) == 0)
 			{
-				ses=helper.generateSession("anonymous");
-				POST["ses"]=ses;
-				ret.set("session", JSON::Value(ses));
-				helper.update(tid, &POST, &PARAMS);
-			}
-			SUser *session=helper.getSession();
-			if(session!=NULL)
-			{
-				logSuccessfulLogin(helper, PARAMS, "anonymous", LoginMethod_Webinterface);
-				session->mStr["login"]="ok";
-				session->id=SESSION_ID_ADMIN;
-			}
-			else
-			{
-				ret.set("error", JSON::Value(1));
+				ret.set("success", JSON::Value(true));
+				if (!has_session)
+				{
+					ses = helper.generateSession("anonymous");
+					POST["ses"] = ses;
+					ret.set("session", JSON::Value(ses));
+					helper.update(tid, &POST, &PARAMS);
+				}
+				SUser* session = helper.getSession();
+				if (session != NULL)
+				{
+					logSuccessfulLogin(helper, PARAMS, "anonymous", LoginMethod_Webinterface);
+					session->mStr["login"] = "ok";
+					session->id = SESSION_ID_ADMIN;
+				}
+				else
+				{
+					ret.set("error", JSON::Value(1));
+				}
 			}
 		}
 	}

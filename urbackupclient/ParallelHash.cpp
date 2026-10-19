@@ -77,7 +77,7 @@ bool ParallelHash::readStdoutIntoBuffer(char * buf, size_t buf_avail, size_t & r
 				return false;
 			}
 
-			lock.relock(nullptr);
+			lock.relock(NULL);
 			Server->wait(1000);
 		}
 	}
@@ -127,10 +127,10 @@ void ParallelHash::operator()()
 #ifdef _WIN32
 	mode = MODE_READ_DEVICE;
 #endif
-	std::unique_ptr<IFile> phashf(Server->openFile(phash_queue->phash_queue->getFilename(), mode));
+	std::auto_ptr<IFile> phashf(Server->openFile(phash_queue->phash_queue->getFilename(), mode));
 
 	while (!do_quit
-		&& phashf.get()!=nullptr)
+		&& phashf.get()!=NULL)
 	{
 		bool had_msg = false;
 		if (phashf->Size() >= phash_queue_pos + static_cast<int64>(sizeof(_u32)))
@@ -158,7 +158,7 @@ void ParallelHash::operator()()
 					}
 					else
 					{
-						lock.relock(nullptr);
+						lock.relock(NULL);
 
 						CRData data(msg.data(), msg.size());
 						hashFile(working_file_id, data, clientdao);
@@ -208,7 +208,7 @@ void ParallelHash::operator()()
 	if (phash_queue->deref())
 	{
 		delete phash_queue;
-		phash_queue = nullptr;
+		phash_queue = NULL;
 	}
 }
 
@@ -278,7 +278,7 @@ bool ParallelHash::hashFile(int64 working_file_id, CRData & data, ClientDAO& cli
 	}
 	else if (id == ID_INIT_HASH)
 	{
-		client_hash.reset(new ClientHash(nullptr, false, 0, nullptr, 0));
+		client_hash.reset(new ClientHash(NULL, false, 0, NULL, 0));
 		return true;
 	}
 	else if (id == ID_CBT_DATA)
@@ -340,11 +340,11 @@ bool ParallelHash::hashFile(int64 working_file_id, CRData & data, ClientDAO& cli
 
 	std::string full_path = dir->snapshot_dir + os_file_sep() + fn;
 
-	std::unique_ptr<IFsFile>  f(Server->openFile(os_file_prefix(full_path), MODE_READ_SEQUENTIAL_BACKUP));
+	std::auto_ptr<IFsFile>  f(Server->openFile(os_file_prefix(full_path), MODE_READ_SEQUENTIAL_BACKUP));
 
 	SFileAndHash fandhash;
 	std::string ph_action;
-	if (f.get() != nullptr && f->Size() < link_file_min_size)
+	if (f.get() != NULL && f->Size() < link_file_min_size)
 	{
 		f.reset();
 		ph_action = " (Not hashing. File too small)";
@@ -368,7 +368,7 @@ bool ParallelHash::hashFile(int64 working_file_id, CRData & data, ClientDAO& cli
 	{
 		f.reset();
 
-		TreeHash treehash(client_hash->hasCbtFile() ? client_hash.get() : nullptr);
+		TreeHash treehash(client_hash->hasCbtFile() ? client_hash.get() : NULL);
 		if (!client_hash->getShaBinary(full_path, treehash, client_hash->hasCbtFile()))
 		{
 			Server->Log("Error hashing file (1) " + full_path+". "+os_last_error_str(), LL_DEBUG);
@@ -520,7 +520,7 @@ bool ParallelHash::addToStdoutBuf(const char * ptr, size_t size)
 	while (stdout_buf_size + size > 32 * 1024
 		&& !do_quit)
 	{
-		lock.relock(nullptr);
+		lock.relock(NULL);
 		Server->wait(1000);
 		lock.relock(mutex.get());
 	}
@@ -570,7 +570,7 @@ void ParallelHash::runExtraThread()
 		std::pair<int64, std::string> msg = extra_queue.front();
 		extra_queue.pop_front();
 
-		lock.relock(nullptr);
+		lock.relock(NULL);
 
 
 		lock.relock(extra_mutex.get());

@@ -15,12 +15,12 @@ SNAP_COWFILE_PATH="/mnt/urbackup_snaps/cbt_info/$SNAP_MOUNTPOINT_SAN-cowfile"
 
 exists()
 {
-	[ -e $1 ]
+	[ -e "$1" ]
 }
 
 has_num ()
 {
-	exists "/mnt/urbackup_snaps/cbt_info/*-snapdev" && grep "$1" "/mnt/urbackup_snaps/cbt_info/*-snapdev" > /dev/null
+	exists /mnt/urbackup_snaps/cbt_info/*-snapdev && grep "$1" /mnt/urbackup_snaps/cbt_info/*-snapdev > /dev/null
 }
 
 get_path()
@@ -55,6 +55,8 @@ then
     echo "Cannot get device for filesystem $SNAP_MOUNTPOINT"
     exit 1
 fi
+
+add_to_updatedb_conf "/mnt/urbackup_snaps"
 
 echo "Snapshotting device $DEVICE via dattobd..."
 

@@ -75,7 +75,7 @@ private:
 	static std::vector<std::string> active_queries;
 #endif
 
-	std::unique_ptr<IScopedReadLock> single_use_lock;
+	std::auto_ptr<IScopedReadLock> single_use_lock;
 
 	friend class ScopedAddActiveQuery;
 };

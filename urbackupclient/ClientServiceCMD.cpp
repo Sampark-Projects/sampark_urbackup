@@ -37,6 +37,8 @@
 #include "win_all_volumes.h"
 #include "DirectoryWatcherThread.h"
 #include "win_network_cost.h"
+#include <mutex>
+#include <thread>
 #else
 #include "lin_ver.h"
 #include "lin_sysvol.h"
@@ -57,8 +59,6 @@ extern ICryptoFactory *crypto_fak;
 
 void ClientConnector::CMD_ADD_IDENTITY(const std::string &identity, const std::string &cmd, bool ident_ok)
 {
-	bool create_token_dir = false;
-
 	if(identity.empty())
 	{
 		tcpstack.Send(pipe, "Identity empty");
@@ -68,12 +68,10 @@ void ClientConnector::CMD_ADD_IDENTITY(const std::string &identity, const std::s
 		if(Server->getServerParameter("restore_mode")=="true" && !ident_ok )
 		{
 			ServerIdentityMgr::addServerIdentity(identity, SPublicKeys());
-			createFacet(identity, endpoint_name);
-			tcpstack.Send(pipe, "OK");
+				tcpstack.Send(pipe, "OK");
 		}
 		else if( ident_ok )
 		{
-			createFacet(identity, endpoint_name);
 			tcpstack.Send(pipe, "OK");
 		}
 		else
@@ -81,7 +79,6 @@ void ClientConnector::CMD_ADD_IDENTITY(const std::string &identity, const std::s
 			ServerIdentityMgr::loadServerIdentities();
 			if( ServerIdentityMgr::checkServerIdentity(identity) )
 			{
-				createFacet(identity, endpoint_name);
 				if(ServerIdentityMgr::hasPublicKey(identity, true))
 				{
 					tcpstack.Send(pipe, "needs certificate");
@@ -96,7 +93,6 @@ void ClientConnector::CMD_ADD_IDENTITY(const std::string &identity, const std::s
 			if( ServerIdentityMgr::numServerIdentities()==0 )
 			{
 				ServerIdentityMgr::addServerIdentity(identity, SPublicKeys());
-				createFacet(identity, endpoint_name);
 				tcpstack.Send(pipe, "OK");
 			}
 			else
@@ -151,16 +147,16 @@ void ClientConnector::CMD_GET_CHALLENGE(const std::string &identity, const std::
 
 	bool local_encrypted = false;
 	bool local_compressed = false;
-	IECDHKeyExchange* shared_key_exchange = nullptr;
+	IECDHKeyExchange* shared_key_exchange = NULL;
 	std::string ret_params;
 
 	if (!internet_conn)
 	{
-		std::unique_ptr<ISettingsReader> settings(
+		std::auto_ptr<ISettingsReader> settings(
 			Server->createFileSettingsReader("urbackup/data/settings.cfg"));
 
-		local_encrypted = settings->getValue("local_encrypted", true);
-		local_compressed = settings->getValue("local_compressed", true);
+		local_encrypted = settings->getValue("local_encrypt", true);
+		local_compressed = settings->getValue("local_compress", true);
 	}
 
 	if (with_enc)
@@ -204,7 +200,7 @@ void ClientConnector::CMD_SIGNATURE(const std::string &identity, const std::stri
 		tcpstack.Send(pipe, "empty identity");
 		return;
 	}
-	if(crypto_fak==nullptr)
+	if(crypto_fak==NULL)
 	{
 		Server->Log("Signature error: No crypto module", LL_ERROR);
 		tcpstack.Send(pipe, "no crypto");
@@ -264,7 +260,7 @@ void ClientConnector::CMD_SIGNATURE(const std::string &identity, const std::stri
 	if( (!pubkeys.ecdsa409k1_key.empty() && crypto_fak->verifyData(pubkeys.ecdsa409k1_key, challenge, signature_ecdsa409k1))
 		|| (pubkeys.ecdsa409k1_key.empty() && !pubkeys.dsa_key.empty() && crypto_fak->verifyDataDSA(pubkeys.dsa_key, challenge, signature)) )
 	{
-		if (challenge_it->second.shared_key_exchange==nullptr ||
+		if (challenge_it->second.shared_key_exchange==NULL ||
 			(crypto_fak->verifyData(pubkeys.ecdsa409k1_key, challenge + pubkey_ecdh233k1, signature_ecdh233k1) &&
 				!(ecdh_shared_key = challenge_it->second.shared_key_exchange->getSharedKey(pubkey_ecdh233k1)).empty() &&
 				!(secret_session_key_decrypted = crypto_fak->decryptAuthenticatedAES(secret_session_key,
@@ -277,12 +273,8 @@ void ClientConnector::CMD_SIGNATURE(const std::string &identity, const std::stri
 				return;
 			}
 
-			ServerIdentityMgr::addSessionIdentity(session_identity, endpoint_name, identity,
+			ServerIdentityMgr::addSessionIdentity(session_identity, endpoint_name,
 				secret_session_key_decrypted);
-
-			std::string facet_dir = Server->getServerWorkingDir() + os_file_sep() 
-				+ "urbackup" + os_file_sep() + "data_" + convert(getFacetId(identity));
-			IndexThread::getFileSrv()->shareDir("urbackup", facet_dir, "#I" + session_identity + "#", false);
 			
 			tcpstack.Send(pipe, "ok");
 			Server->destroy(challenge_it->second.shared_key_exchange);
@@ -301,7 +293,7 @@ void ClientConnector::CMD_SIGNATURE(const std::string &identity, const std::stri
 	}
 }
 
-void ClientConnector::CMD_START_INCR_FILEBACKUP(const std::string &cmd, const std::string& server_identity)
+void ClientConnector::CMD_START_INCR_FILEBACKUP(const std::string &cmd)
 {
 	timeoutAsyncFileIndex();
 
@@ -348,20 +340,6 @@ void ClientConnector::CMD_START_INCR_FILEBACKUP(const std::string &cmd, const st
 		clientsubname = conv_filename((it_clientsubname->second));
 	}
 
-	int facet_id = getFacetId(ServerIdentityMgr::getIdentityFromSessionIdentity(server_identity));
-	std::string dest, dest_params, computername;
-	str_map dest_secret_params;
-	size_t max_backups=1;
-	std::string perm_uid;
-	getBackupDest(clientsubname, facet_id, dest, dest_params,
-		dest_secret_params, computername, max_backups, perm_uid);
-
-	if (localBackup(dest, dest_params, dest_secret_params, computername,
-		false, max_backups, server_identity, params, perm_uid))
-	{
-		return;
-	}
-
 	unsigned int flags = 0;
 
 	if(params.find("with_scripts")!=params.end())
@@ -389,7 +367,7 @@ void ClientConnector::CMD_START_INCR_FILEBACKUP(const std::string &cmd, const st
 		flags |= flag_end_to_end_verification;
 	}
 
-	if(calculateFilehashesOnClient(clientsubname, facet_id))
+	if(calculateFilehashesOnClient(clientsubname))
 	{
 		flags |= flag_calc_checksums;
 	}
@@ -416,7 +394,6 @@ void ClientConnector::CMD_START_INCR_FILEBACKUP(const std::string &cmd, const st
 	data.addString(clientsubname);
 	data.addInt(sha_version);
 	data.addInt(running_jobs);
-	data.addInt(getFacetId(ServerIdentityMgr::getIdentityFromSessionIdentity(server_identity)));
 	data.addChar(async_list ? 1 : 0);
 
 	std::string async_id;
@@ -471,22 +448,20 @@ void ClientConnector::CMD_START_INCR_FILEBACKUP(const std::string &cmd, const st
 	if (!async_list)
 	{
 		state = CCSTATE_START_FILEBACKUP;
-		curr_backup_tt = ILLEGAL_THREADPOOL_TICKET;
 	}
 	else
 	{
-		process_lock.relock(nullptr);
+		process_lock.relock(NULL);
 
 		SAsyncFileList new_async_file_list = {
 			Server->getTimeMS(),
 			curr_result_id,
-			0,
-			ILLEGAL_THREADPOOL_TICKET
+			0
 		};
 
 		async_file_index[async_id] = new_async_file_list;
 
-		lock.relock(nullptr);
+		lock.relock(NULL);
 
 		IndexThread::refResult(curr_result_id);
 
@@ -494,7 +469,7 @@ void ClientConnector::CMD_START_INCR_FILEBACKUP(const std::string &cmd, const st
 	}
 }
 
-void ClientConnector::CMD_START_FULL_FILEBACKUP(const std::string &cmd, const std::string& server_identity)
+void ClientConnector::CMD_START_FULL_FILEBACKUP(const std::string &cmd)
 {
 	timeoutAsyncFileIndex();
 
@@ -525,35 +500,18 @@ void ClientConnector::CMD_START_FULL_FILEBACKUP(const std::string &cmd, const st
 	}
 
 	int64 server_id = watoi64(params["status_id"]);
-
-	std::string clientsubname;
-	str_map::iterator it_clientsubname = params.find("clientsubname");
-	if (it_clientsubname != params.end())
-	{
-		clientsubname = conv_filename((it_clientsubname->second));
-	}
-
-	int facet_id = getFacetId(ServerIdentityMgr::getIdentityFromSessionIdentity(server_identity));
-	std::string dest, dest_params, computername;
-	str_map dest_secret_params;
-	size_t max_backups = 1;
-	std::string perm_uid;
-	getBackupDest(clientsubname, facet_id, dest, dest_params, dest_secret_params, 
-		computername, max_backups, perm_uid);
-
-	if (localBackup(dest, dest_params, dest_secret_params, computername,
-		true, max_backups, server_identity, params, perm_uid))
-	{
-		return;
-	}
-
 	std::string sha_version_str = params["sha"];
 	int sha_version = 512;
 	if(!sha_version_str.empty())
 	{
 		sha_version = watoi(sha_version_str);
 	}
-	
+	std::string clientsubname;
+	str_map::iterator it_clientsubname = params.find("clientsubname");
+	if(it_clientsubname!=params.end())
+	{
+		clientsubname = conv_filename((it_clientsubname->second));
+	}
 
 	int flags = 0;
 
@@ -582,7 +540,7 @@ void ClientConnector::CMD_START_FULL_FILEBACKUP(const std::string &cmd, const st
 		flags |= flag_end_to_end_verification;
 	}
 
-	if(calculateFilehashesOnClient(clientsubname, facet_id))
+	if(calculateFilehashesOnClient(clientsubname))
 	{
 		flags |= flag_calc_checksums;
 	}
@@ -609,7 +567,6 @@ void ClientConnector::CMD_START_FULL_FILEBACKUP(const std::string &cmd, const st
 	data.addString(clientsubname);
 	data.addInt(sha_version);
 	data.addInt(running_jobs);
-	data.addInt(facet_id);
 	data.addChar(async_list ? 1 : 0);
 
 	std::string async_id;
@@ -650,23 +607,21 @@ void ClientConnector::CMD_START_FULL_FILEBACKUP(const std::string &cmd, const st
 	if (!async_list)
 	{
 		state = CCSTATE_START_FILEBACKUP;
-		curr_backup_tt = ILLEGAL_THREADPOOL_TICKET;
 	}
 	else
 	{
-		process_lock.relock(nullptr);
+		process_lock.relock(NULL);
 
 		SAsyncFileList new_async_file_list = {
 			Server->getTimeMS(),
 			curr_result_id,
-			0,
-			ILLEGAL_THREADPOOL_TICKET
+			0
 		};
 
 		async_file_index[async_id] = new_async_file_list;
 		Server->Log("Async index " + bytesToHex(async_id), LL_DEBUG);
 
-		lock.relock(nullptr);
+		lock.relock(NULL);
 
 		IndexThread::refResult(curr_result_id);
 
@@ -705,7 +660,7 @@ void ClientConnector::CMD_WAIT_FOR_INDEX(const std::string &cmd)
 			}
 		}
 
-		lock.relock(nullptr);
+		lock.relock(NULL);
 
 		Server->Log("Async index " + async_id + " not found", LL_DEBUG);
 
@@ -715,7 +670,7 @@ void ClientConnector::CMD_WAIT_FOR_INDEX(const std::string &cmd)
 	{
 		unsigned int result_id = it->second.result_id;
 		async_file_index.erase(it);
-		lock.relock(nullptr);
+		lock.relock(NULL);
 
 		IndexThread::removeResult(result_id);
 
@@ -730,15 +685,7 @@ void ClientConnector::CMD_WAIT_FOR_INDEX(const std::string &cmd)
 		++it->second.refcount;
 		it->second.last_update = Server->getTimeMS();
 		curr_result_id = it->second.result_id;
-		if (curr_result_id != 0)
-		{
-			IndexThread::refResult(curr_result_id);
-			curr_backup_tt = ILLEGAL_THREADPOOL_TICKET;
-		}
-		else
-		{
-			curr_backup_tt = it->second.backup_ticket;
-		}
+		IndexThread::refResult(curr_result_id);
 	}
 }
 
@@ -953,17 +900,12 @@ void ClientConnector::CMD_SAVE_BACKUPDIRS(const std::string &cmd, str_map &param
 {
 	if(last_capa & DONT_ALLOW_CONFIG_PATHS)
 	{
+		Server->Log("Changing paths to backup is disabled", LL_WARNING);
 		tcpstack.Send(pipe, "FAILED");
 		return;
 	}
 
-	std::string facet_name = params["facet"];
-
-	if (facet_name.empty())
-		facet_name = "default";
-
-
-	if(saveBackupDirs(params, false, 0, getFacetIdByName(facet_name)))
+	if(saveBackupDirs(params, false, 0))
 	{
 		tcpstack.Send(pipe, "OK");
 	}
@@ -981,7 +923,7 @@ void ClientConnector::CMD_DID_BACKUP(const std::string &cmd)
 
 		SRunningProcess* proc = getRunningFileBackupProcess(std::string(), 0);
 
-		if (proc != nullptr)
+		if (proc != NULL)
 		{
 			removeRunningProcess(proc->id, true);
 		}
@@ -1016,7 +958,7 @@ void ClientConnector::CMD_DID_BACKUP2(const std::string &cmd)
 
 		SRunningProcess* proc = getRunningFileBackupProcess(server_token, watoi64(params["status_id"]));
 
-		if (proc != nullptr)
+		if (proc != NULL)
 		{
 			removeRunningProcess(proc->id, true);
 		}
@@ -1050,7 +992,7 @@ void ClientConnector::CMD_BACKUP_FAILED(const std::string & cmd)
 
 		SRunningProcess* proc = getRunningFileBackupProcess(server_token, watoi64(params["status_id"]));
 
-		if (proc != nullptr)
+		if (proc != NULL)
 		{
 			removeRunningProcess(proc->id, false);
 		}
@@ -1068,7 +1010,7 @@ int64 ClientConnector::getLastBackupTime()
 {
 	IDatabase *db=Server->getDatabase(Server->getThreadID(), URBACKUPDB_CLIENT);
 	IQuery *q=db->Prepare("SELECT strftime('%s',last_backup) AS last_backup FROM status", false);
-	if (q == nullptr)
+	if (q == NULL)
 		return 0;
 
 	int timeoutms=300;
@@ -1099,9 +1041,9 @@ std::string ClientConnector::getCurrRunningJob(bool reset_done, int& pcdone)
 
 	SRunningProcess* proc = getActiveProcess(x_pingtimeout);
 
-	if(proc==nullptr )
+	if(proc==NULL )
 	{
-		lock_process.relock(nullptr);
+		lock_process.relock(NULL);
 		return getHasNoRecentBackup();
 	}
 	else
@@ -1120,7 +1062,7 @@ SChannel * ClientConnector::getCurrChannel()
 			return &channel_pipes[i];
 		}
 	}
-	return nullptr;
+	return NULL;
 }
 
 void ClientConnector::CMD_STATUS(const std::string &cmd)
@@ -1213,7 +1155,7 @@ void ClientConnector::CMD_STATUS_DETAIL(const std::string &cmd)
 
 	ret.set("internet_connected", InternetClient::isConnected());
 
-	ret.set("internet_status", InternetClient::getStatusMsg(getFacetIdByName("default")));
+	ret.set("internet_status", InternetClient::getStatusMsg());
 
 	IDatabase *db = Server->getDatabase(Server->getThreadID(), URBACKUPDB_CLIENT);
 
@@ -1226,14 +1168,89 @@ void ClientConnector::CMD_STATUS_DETAIL(const std::string &cmd)
 	lasttime=Server->getTimeMS();
 }
 
-void ClientConnector::CMD_UPDATE_SETTINGS(const std::string &cmd, const std::string& server_identity)
+void ClientConnector::CMD_UPDATE_SETTINGS(const std::string &cmd)
 {
 	std::string s_settings=cmd.substr(9);
 	unescapeMessage(s_settings);
-	updateSettings( s_settings, server_identity);
+	updateSettings( s_settings );
 	tcpstack.Send(pipe, "OK");
 	lasttime=Server->getTimeMS();
 }
+
+#ifdef _WIN32
+
+namespace
+{
+	std::mutex prevent_sleep_mutex;
+	int64 last_prevent_sleep_time = 0;
+
+	void prevent_thread_func()
+	{
+		SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_CONTINUOUS);
+
+		std::unique_lock<std::mutex> lock(prevent_sleep_mutex);
+
+		while (Server->getTimeMS() - last_prevent_sleep_time < 2 * 60 * 1000)
+		{
+			lock.unlock();
+			Server->wait(10000);
+			lock.lock();
+		}
+
+		last_prevent_sleep_time = 0;
+		SetThreadExecutionState(ES_CONTINUOUS);
+	}
+
+	typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+
+	bool IsWindows11()
+	{
+		HMODULE hMod = GetModuleHandleW(L"ntdll.dll");
+		if (!hMod)
+			return false;
+
+		RtlGetVersionPtr pRtlGetVersion =
+			reinterpret_cast<RtlGetVersionPtr>(GetProcAddress(hMod, "RtlGetVersion"));
+
+		if (!pRtlGetVersion)
+			return false;
+
+		RTL_OSVERSIONINFOW info;
+		ZeroMemory(&info, sizeof(info));
+		info.dwOSVersionInfoSize = sizeof(info);
+
+		if (pRtlGetVersion(&info) != 0)
+			return false;
+
+		/* Windows 11 = major version 10, build >= 22000 */
+		return info.dwMajorVersion>10 || 
+			(info.dwMajorVersion==10 && info.dwMinorVersion>0) ||
+			(info.dwMajorVersion == 10 && info.dwBuildNumber >= 22000);
+	}
+
+
+	void preventSleep()
+	{
+		static bool isWin11 = IsWindows11();
+		if (isWin11)
+		{
+			std::lock_guard<std::mutex> lock(prevent_sleep_mutex);
+
+			if (last_prevent_sleep_time == 0)
+			{
+				std::thread prevent_sleep_thread = std::thread(prevent_thread_func);
+				prevent_sleep_thread.detach();
+			}
+
+			last_prevent_sleep_time = Server->getTimeMS();
+			return;
+		}
+
+		SetThreadExecutionState(ES_SYSTEM_REQUIRED);
+	}
+}
+
+#endif //_WIN32
 
 void ClientConnector::CMD_PING_RUNNING(const std::string &cmd)
 {
@@ -1251,12 +1268,12 @@ void ClientConnector::CMD_PING_RUNNING(const std::string &cmd)
 
 	SRunningProcess* proc = getRunningFileBackupProcess(server_token, 0);
 
-	if (proc == nullptr)
+	if (proc == NULL)
 	{
 		return;
 	}
 
-	int pcdone_old = proc->pcdone;
+	const int pcdone_old = proc->pcdone;
 
 	if (pcdone_new.empty())
 		proc->pcdone = -1;
@@ -1272,7 +1289,8 @@ void ClientConnector::CMD_PING_RUNNING(const std::string &cmd)
 	proc->last_pingtime = Server->getTimeMS();	
 
 #ifdef _WIN32
-	SetThreadExecutionState(ES_SYSTEM_REQUIRED);
+	if (!IdleCheckerThread::getPause())
+		preventSleep();
 #endif
 }
 
@@ -1282,9 +1300,10 @@ void ClientConnector::CMD_PING_RUNNING2(const std::string &cmd)
 	str_map params;
 	ParseParamStrHttp(params_str, &params);
 	str_map::iterator it_paused_fb = params.find("paused_fb");
+	const bool paused = IdleCheckerThread::getPause();
 	if (it_paused_fb != params.end()
 		&& it_paused_fb->second == "1"
-		&& IdleCheckerThread::getPause())
+		&& paused)
 	{
 		tcpstack.Send(pipe, "PAUSED");
 	}
@@ -1303,14 +1322,14 @@ void ClientConnector::CMD_PING_RUNNING2(const std::string &cmd)
 	
 	SRunningProcess* proc = getRunningBackupProcess(server_token, watoi64(params["status_id"]));
 
-	if (proc == nullptr)
+	if (proc == NULL)
 	{
 		return;
 	}
 
 	std::string pcdone_new=params["pc_done"];
 
-	int pcdone_old = proc->pcdone;
+	const int pcdone_old = proc->pcdone;
 
 	if(pcdone_new.empty())
 		proc->pcdone =-1;
@@ -1330,7 +1349,8 @@ void ClientConnector::CMD_PING_RUNNING2(const std::string &cmd)
 	proc->done_bytes = watoi64(params["done_bytes"]);
 
 #ifdef _WIN32
-	SetThreadExecutionState(ES_SYSTEM_REQUIRED);
+	if(!paused)
+		preventSleep();
 #endif
 }
 
@@ -1342,7 +1362,7 @@ void ClientConnector::CMD_CHANNEL(const std::string &cmd, IScopedLock *g_lock, c
 
 		SRunningProcess* proc = getRunningProcess(RUNNING_RESTORE_IMAGE, std::string());
 
-		img_download_running = proc != nullptr;
+		img_download_running = proc != NULL;
 	}
 
 	if(!img_download_running)
@@ -1364,17 +1384,6 @@ void ClientConnector::CMD_CHANNEL(const std::string &cmd, IScopedLock *g_lock, c
 				tcpstack.Send(pipe, std::string("METERED metered=") + (metered ? "1" : "0"));
 			}
 		}
-
-		{
-			IScopedLock lock(ident_mutex);
-			bool locked = IndexThread::isWindowsLocked();
-			if (locked != last_locked)
-			{
-				last_locked = locked;
-				lock.relock(NULL);
-				tcpstack.Send(pipe, std::string("LOCKED locked=") + (locked ? "1" : "0"));
-			}
-		}
 #endif
 
 		std::string token;
@@ -1390,10 +1399,36 @@ void ClientConnector::CMD_CHANNEL(const std::string &cmd, IScopedLock *g_lock, c
 			tcpstack.Send(pipe, "STARTUP timestamp=" + convert(startup_timestamp));
 		}
 
+		bool create_smb_dir = true;
+
+		size_t idx = 0;
+		while (params.find("client_user_name_" + std::to_string(idx)) != params.end())
+		{
+			if (create_smb_dir)
+			{
+				create_smb_dir = false;
+				os_create_dir("smbpw");
+			}
+
+			std::string user_name = params["client_user_name_" + std::to_string(idx)];
+			std::string user_login = params["client_user_login_" + std::to_string(idx)];
+			std::string user_pw = params["client_user_pw_" + std::to_string(idx)];
+
+			std::string fn = bytesToHex(user_name) + ".dat";
+
+			const auto smb_pw_fn = "smbpw/" + fn;
+
+			if (!FileExists(smb_pw_fn))
+			{
+				tokens::write_smb_pw(smb_pw_fn, user_name, user_login + ":" + user_pw);
+			}
+			++idx;
+		}
+
 		g_lock->relock(backup_mutex);
 
 		channel_pipes.push_back(SChannel(pipe, internet_conn, endpoint_name, token,
-			&make_fileserv, identity, capa, watoi(params["restore_version"]), params["virtual_client"]));
+			&make_conn, identity, capa, watoi(params["restore_version"]), params["virtual_client"]));
 		is_channel=true;
 		state=CCSTATE_CHANNEL;
 		last_channel_ping=Server->getTimeMS();
@@ -1407,7 +1442,7 @@ void ClientConnector::CMD_CHANNEL_PONG(const std::string &cmd, const std::string
 	lasttime=Server->getTimeMS();
 	IScopedLock lock(backup_mutex);
 	SChannel* chan = getCurrChannel();
-	if (chan != nullptr && chan->state == SChannel::EChannelState_Pinging)
+	if (chan != NULL && chan->state == SChannel::EChannelState_Pinging)
 	{
 		chan->state = SChannel::EChannelState_Idle;
 	}
@@ -1447,15 +1482,53 @@ void ClientConnector::CMD_TOCHANNEL_START_INCR_IMAGEBACKUP(const std::string &cm
 
 void ClientConnector::CMD_TOCHANNEL_UPDATE_SETTINGS(const std::string &cmd)
 {
+	std::string s_settings = cmd.substr(16);
+	unescapeMessage(s_settings);
+
 	if(last_capa & DONT_SHOW_SETTINGS)
 	{
-		tcpstack.Send(pipe, "FAILED");
-		return;
+		bool change_allowed = false;
+		if (!(last_capa & DONT_ALLOW_CONFIG_PATHS) ||
+			!(last_capa & DONT_ALLOW_COMPONENT_CONFIG) )
+		{
+			std::auto_ptr<ISettingsReader> new_settings(Server->createMemorySettingsReader(s_settings));
+			bool default_dirs_use = false;
+			std::vector<std::string> keys = new_settings->getKeys();
+			unsigned int settings_types = 0;
+			for (size_t i = 0; i < keys.size(); ++i)
+			{
+				const std::string& key = keys[i];
+				if (key == "set_client_settings")
+					continue;
+				if (key == "default_dirs" || key.find("default_dirs.") == 0)
+					settings_types |= 1;
+				else if (key == "vss_select_components" || key.find("vss_select_components.") == 0)
+					settings_types |= 2;
+				else
+				{
+					settings_types |= 4;
+					break;
+				}
+			}
+
+			if (settings_types == 1 && 
+				!(last_capa & DONT_ALLOW_CONFIG_PATHS) )
+				change_allowed = true;
+			else if (settings_types == 2 &&
+				!(last_capa & DONT_ALLOW_COMPONENT_CONFIG))
+				change_allowed = true;
+		}
+
+		if (!change_allowed)
+		{
+			Server->Log("Settings change not allowed: "+ s_settings, LL_INFO);
+			tcpstack.Send(pipe, "FAILED");
+			return;
+		}
 	}
 
-	std::string s_settings=cmd.substr(16);
+	
 	lasttime=Server->getTimeMS();
-	unescapeMessage(s_settings);
 	replaceSettings( s_settings );
 
 	IScopedLock lock(backup_mutex);
@@ -1723,7 +1796,7 @@ void ClientConnector::CMD_INCR_IMAGE(const std::string &cmd, bool ident_ok)
 				bitmapleft = watoi(f_cbitmapsize->second);
 
 				bitmapfile = Server->openTemporaryFile();
-				if (bitmapfile == nullptr)
+				if (bitmapfile == NULL)
 				{
 					Server->Log("Error creating temporary bitmap file in CMD_INCR_IMAGE", LL_ERROR);
 					do_quit = true;
@@ -1732,7 +1805,7 @@ void ClientConnector::CMD_INCR_IMAGE(const std::string &cmd, bool ident_ok)
 			}
 			else
 			{
-				bitmapfile = nullptr;
+				bitmapfile = NULL;
 			}
 
 			int running_jobs = 2;
@@ -1767,7 +1840,7 @@ void ClientConnector::CMD_INCR_IMAGE(const std::string &cmd, bool ident_ok)
 			}
 
 			hashdatafile=Server->openTemporaryFile();
-			if(hashdatafile==nullptr)
+			if(hashdatafile==NULL)
 			{
 				Server->Log("Error creating temporary file in CMD_INCR_IMAGE", LL_ERROR);
 				do_quit=true;
@@ -1776,27 +1849,25 @@ void ClientConnector::CMD_INCR_IMAGE(const std::string &cmd, bool ident_ok)
 
 			state = CCSTATE_IMAGE_HASHDATA;
 
-			size_t bufpos = 0;
 			IFile* datafile = hashdatafile;
 			_u32* dataleft = &hashdataleft;
-			while(bufpos<tcpstack.getBuffersize())
+			while(tcpstack.getBuffersize()>0)
 			{
-				_u32 towrite = (std::min)(static_cast<_u32>(tcpstack.getBuffersize() - bufpos), *dataleft);
-				if(datafile->Write(tcpstack.getBuffer()+ bufpos, towrite)!= towrite)
+				_u32 towrite = (std::min)(static_cast<_u32>(tcpstack.getBuffersize()), *dataleft);
+				if(datafile->Write(tcpstack.getBuffer(), towrite)!= towrite)
 				{
 					Server->Log("Error writing to data temporary file in CMD_INCR_IMAGE", LL_ERROR);
 					do_quit=true;
 					return;
 				}
 				
-				bufpos += towrite;
 				*dataleft -= towrite;
 
 				tcpstack.removeFront(towrite);
 
 				if(*dataleft == 0)
 				{
-					if (bitmapfile == nullptr
+					if (bitmapfile == NULL
 						|| datafile==bitmapfile)
 					{
 						hashdataok = true;
@@ -2417,7 +2488,7 @@ void ClientConnector::CMD_RESTORE_DOWNLOADPROGRESS(const std::string &cmd)
 	{
 		IScopedLock lock(process_mutex);
 		SRunningProcess* proc = getRunningProcess(RUNNING_RESTORE_IMAGE, std::string());
-		img_download_running = proc != nullptr;
+		img_download_running = proc != NULL;
 	}
 
 	if(!img_download_running)
@@ -2434,7 +2505,7 @@ void ClientConnector::CMD_RESTORE_DOWNLOADPROGRESS(const std::string &cmd)
 				{
 					IScopedLock lock(process_mutex);
 					SRunningProcess* proc = getRunningProcess(RUNNING_RESTORE_IMAGE, std::string());
-					if (proc != nullptr)
+					if (proc != NULL)
 					{
 						progress = proc->pcdone;
 					}
@@ -2602,7 +2673,7 @@ void ClientConnector::CMD_VERSION_UPDATE(const std::string &cmd)
 void ClientConnector::CMD_CLIENT_UPDATE(const std::string &cmd)
 {
 	hashdatafile=Server->openTemporaryFile();
-	if(hashdatafile==nullptr)
+	if(hashdatafile==NULL)
 	{
 		Server->Log("Error creating temporary file in CMD_CLIENT_UPDATE", LL_ERROR);
 		do_quit=true;
@@ -2702,6 +2773,14 @@ void ClientConnector::CMD_CAPA(const std::string &cmd)
 	std::string os_version_str = get_windows_version();
 	std::string win_volumes;
 	std::string win_nonusb_volumes;
+	std::string users;
+
+	static const auto local_users = tokens::get_local_users();
+	for (const auto& user : local_users)
+	{
+		if (!users.empty()) users += ";";
+		users += user;
+	}
 
 	{
 		IScopedLock lock(backup_mutex);
@@ -2724,14 +2803,11 @@ void ClientConnector::CMD_CAPA(const std::string &cmd)
 		last_metered = metered;
 	}
 
-	bool locked = IndexThread::isWindowsLocked();
-	std::string locked_str = std::string("&LOCKED=") + (locked ? "1" : "0");
-
 	tcpstack.Send(pipe, "FILE=2&FILE2=1&IMAGE=1&UPDATE=1&MBR=1&FILESRV=3&SET_SETTINGS=1&IMAGE_VER=1&CLIENTUPDATE=2&ASYNC_INDEX=1"
 		"&CLIENT_VERSION_STR="+EscapeParamString((client_version_str))+"&OS_VERSION_STR="+EscapeParamString(os_version_str)+
 		"&ALL_VOLUMES="+EscapeParamString(win_volumes)+"&ETA=1&CDP=0&ALL_NONUSB_VOLUMES="+EscapeParamString(win_nonusb_volumes)+"&EFI=1"
-		"&FILE_META=1&SELECT_SHA=1&PHASH=1&RESTORE="+restore+"&RESTORE_VER=1&CLIENT_BITMAP=1&CMD=2&SYMBIT=1&WTOKENS=1&FILESRVTUNNEL=1&FACET=1&OS_SIMPLE=windows"
-		"&clientuid="+EscapeParamString(clientuid)+conn_metered+ send_prev_cbitmap + imm_backup + locked_str);
+		"&FILE_META=1&SELECT_SHA=1&PHASH=1&RESTORE="+restore+"&RESTORE_VER=1&CLIENT_BITMAP=1&CMD=2&SYMBIT=1&WTOKENS=1&FILESRVTUNNEL=1&OS_SIMPLE=windows"
+		"&clientuid="+EscapeParamString(clientuid)+conn_metered+ send_prev_cbitmap + imm_backup + "&USERS="+EscapeParamString(users));
 #else
 
 #ifdef __APPLE__
@@ -2740,6 +2816,14 @@ void ClientConnector::CMD_CAPA(const std::string &cmd)
 	std::string os_simple = "linux";
 #else
 	std::string os_simple = "unknown";
+#endif
+
+	std::string all_volumes;
+	std::string all_nonusb_volumes;
+
+#ifdef __linux__
+	all_volumes = get_all_volumes_list(false, volumes_cache);
+	all_nonusb_volumes = get_all_volumes_list(true, volumes_cache);
 #endif
 
 	std::string image_args = "&IMAGE=0";
@@ -2751,8 +2835,9 @@ void ClientConnector::CMD_CAPA(const std::string &cmd)
 
 	std::string os_version_str=get_lin_os_version();
 	tcpstack.Send(pipe, "FILE=2&FILE2=1&FILESRV=3&SET_SETTINGS=1&IMAGE_VER=1&CLIENTUPDATE=2&ASYNC_INDEX=1"
-		"&CLIENT_VERSION_STR="+EscapeParamString((client_version_str))+"&OS_VERSION_STR="+EscapeParamString(os_version_str)
-		+"&ETA=1&CPD=0&EFI=1&FILE_META=1&SELECT_SHA=1&PHASH=1&RESTORE="+restore+"&RESTORE_VER=1&CLIENT_BITMAP=1&CMD=2&SYMBIT=1&WTOKENS=1&FILESRVTUNNEL=1&FACET=1&OS_SIMPLE="+os_simple
+		"&CLIENT_VERSION_STR="+EscapeParamString((client_version_str))+"&OS_VERSION_STR="+EscapeParamString(os_version_str) +
+		"&ALL_VOLUMES="+EscapeParamString(all_volumes)+"&ALL_NONUSB_VOLUMES="+EscapeParamString(all_nonusb_volumes)
+		+"&ETA=1&CDP=0&EFI=1&FILE_META=1&SELECT_SHA=1&PHASH=1&RESTORE="+restore+"&RESTORE_VER=1&CLIENT_BITMAP=1&CMD=2&SYMBIT=1&WTOKENS=1&FILESRVTUNNEL=1&OS_SIMPLE="+os_simple
 		+"&clientuid=" + EscapeParamString(clientuid) + imm_backup + image_args);
 #endif
 }
@@ -2841,7 +2926,7 @@ void ClientConnector::CMD_GET_VSSLOG(const std::string &cmd)
 
 void ClientConnector::CMD_GET_ACCESS_PARAMS(str_map &params)
 {
-	if(crypto_fak==nullptr)
+	if(crypto_fak==NULL)
 	{
 		Server->Log("No cryptoplugin present. Action not possible.", LL_ERROR);
 		tcpstack.Send(pipe, "");
@@ -2850,7 +2935,7 @@ void ClientConnector::CMD_GET_ACCESS_PARAMS(str_map &params)
 
 	std::string tokens=params["tokens"];
 
-	std::unique_ptr<ISettingsReader> settings(
+	std::auto_ptr<ISettingsReader> settings(
 		Server->createFileSettingsReader("urbackup/data/settings.cfg"));
 
 	std::string server_url;
@@ -2907,7 +2992,7 @@ void ClientConnector::CMD_SCRIPT_STDERR(const std::string& cmd)
 	}
 }
 
-void ClientConnector::CMD_FILE_RESTORE(const std::string& cmd, const std::string& identity)
+void ClientConnector::CMD_FILE_RESTORE(const std::string& cmd)
 {
 	str_map params;
 	ParseParamStrHttp(cmd, &params);
@@ -2970,13 +3055,13 @@ void ClientConnector::CMD_FILE_RESTORE(const std::string& cmd, const std::string
 		restore_process_id = ++curr_backup_running_id;
 	}
 
-	if (crypto_fak != nullptr
+	if (crypto_fak != NULL
 		&& client_token_encrypted)
 	{
-		std::unique_ptr<ISettingsReader> access_keys(
+		std::auto_ptr<ISettingsReader> access_keys(
 			Server->createFileSettingsReader("urbackup/access_keys.properties"));
 
-		if (access_keys.get() != nullptr)
+		if (access_keys.get() != NULL)
 		{
 			std::string access_key;
 			if (access_keys->getValue("key." + server_token, &access_key))
@@ -3009,9 +3094,7 @@ void ClientConnector::CMD_FILE_RESTORE(const std::string& cmd, const std::string
 		Server->Log("Error decrypting server access token. Crypto_fak not loaded.", LL_ERROR);
 	}
 
-	int facet_id = getFacetId(ServerIdentityMgr::getIdentityFromSessionIdentity(identity));
-
-	RestoreFiles* local_restore_files = new RestoreFiles(facet_id, restore_process_id, restore_id, status_id, log_id,
+	RestoreFiles* local_restore_files = new RestoreFiles(restore_process_id, restore_id, status_id, log_id,
 		client_token, server_token, restore_path, single_file, clean_other, ignore_other_fs, restore_flags,
 		tgroup, clientsubname);
 
@@ -3022,7 +3105,7 @@ void ClientConnector::CMD_FILE_RESTORE(const std::string& cmd, const std::string
 		++ask_restore_ok;
 		status_updated = true;
 
-		if(restore_files!=nullptr)
+		if(restore_files!=NULL)
 		{
 			delete restore_files;
 		}
@@ -3047,28 +3130,28 @@ void ClientConnector::CMD_RESTORE_OK( str_map &params )
 
 		ret.set("accepted", true);
 
-		if(restore_files!=nullptr)
+		if(restore_files!=NULL)
 		{
 			ret.set("process_id", restore_files->get_local_process_id());
 
 			Server->createThread(restore_files, "file restore", IServer::CreateThreadFlags_LargeStackSize);
-			restore_files=nullptr;
+			restore_files=NULL;
 		}
 	}
 	else
 	{
 		restore_ok_status = RestoreOk_Declined;
 
-		if (restore_files != nullptr)
+		if (restore_files != NULL)
 		{
 			restore_files->set_restore_declined(true);
 			Server->createThread(restore_files, "file restore", IServer::CreateThreadFlags_LargeStackSize);
-			restore_files = nullptr;
+			restore_files = NULL;
 		}
 	}
 
 	delete restore_files;
-	restore_files=nullptr;
+	restore_files=NULL;
 
 	ret.set("ok", true);
 	tcpstack.Send(pipe, ret.stringify(false));
@@ -3119,8 +3202,7 @@ void ClientConnector::CMD_WRITE_TOKENS(const std::string& cmd)
 	SAsyncFileList new_async_file_list = {
 		Server->getTimeMS(),
 		curr_result_id,
-		0,
-		ILLEGAL_THREADPOOL_TICKET
+		0
 	};
 
 	CWData data;
@@ -3148,7 +3230,7 @@ void ClientConnector::CMD_WRITE_TOKENS(const std::string& cmd)
 
 	async_file_index[async_id] = new_async_file_list;
 
-	lock.relock(nullptr);
+	lock.relock(NULL);
 
 	tcpstack.Send(pipe, "ASYNC-async_id=" + bytesToHex(async_id));
 }
@@ -3157,63 +3239,5 @@ void ClientConnector::CMD_GET_CLIENTNAME(const std::string& cmd)
 {
 	std::string name = IndexThread::getFileSrv()->getServerName();
 	tcpstack.Send(pipe, "name="+EscapeParamString(name));
-}
-
-void ClientConnector::CMD_FINISH_LBACKUP(const std::string& cmd)
-{
-	str_map params;
-	ParseParamStrHttp(cmd.substr(15), &params);
-
-	int step = watoi(params["step"]);
-
-	if (step == 1)
-	{
-		std::vector<SFile> files = getFiles("urbackup");
-
-		size_t idx = 0;
-		std::string ret = "ok=1";
-
-		for (SFile& file : files)
-		{
-			if (!file.isdir && next(file.name, 0, "bg_del_"+conv_filename(server_token)))
-			{
-				ret += "&del_fn" + std::to_string(idx) + "=" + EscapeParamString(file.name);
-				++idx;
-			}
-		}
-
-		tcpstack.Send(pipe, ret);
-	}
-	else if (step == 2)
-	{
-		std::vector<std::string> del_fns;
-		size_t idx = 0;
-		while (params.find("del_fn" + std::to_string(idx)) != params.end())
-		{
-			del_fns.push_back(params["del_fn" + std::to_string(idx)]);
-			++idx;
-		}
-
-		std::vector<SFile> files = getFiles("urbackup");
-
-		std::sort(files.begin(), files.end());
-
-		for (std::string del_fn : del_fns)
-		{
-			SFile cf;
-			cf.name = del_fn;
-
-			if (std::binary_search(files.begin(), files.end(), cf))
-			{
-				Server->deleteFile("urbackup" + os_file_sep() + conv_filename(cf.name));
-			}
-		}
-
-		tcpstack.Send(pipe, "ok=1");
-	}
-	else
-	{
-		tcpstack.Send(pipe, "ok=0&err=no step");
-	}
 }
 	

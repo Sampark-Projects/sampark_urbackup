@@ -6,8 +6,6 @@
 #include <setjmp.h>
 #endif
 
-#include <cstdint> // for uintptr_t data type
-
 // Visual Studio needs VS2008 (1500)
 //  http://msdn.microsoft.com/en-us/library/bb531394%28v=vs.90%29.aspx
 #if defined(_MSC_VER) && (_MSC_VER < 1500)
@@ -27,7 +25,7 @@
 // Intrinsics availible in GCC 4.3 (http://gcc.gnu.org/gcc-4.3/changes.html) and
 //   MSVC 2008 (http://msdn.microsoft.com/en-us/library/bb892950%28v=vs.90%29.aspx)
 //   SunCC could generate SSE4 at 12.1, but the intrinsics are missing until 12.4.
-#if !defined(CRYPTOPP_DISABLE_ASM) && !defined(CRYPTOPP_DISABLE_SSE4) && !defined(_M_ARM) && ((_MSC_VER >= 1500) || (defined(__SSE4_1__) && defined(__SSE4_2__)))
+#if !defined(CRYPTOPP_DISABLE_ASM) && !defined(CRYPTOPP_DISABLE_SSE4) && !defined(_M_ARM) && !defined(_M_ARM64) && ((_MSC_VER >= 1500) || (defined(__SSE4_1__) && defined(__SSE4_2__)))
 #define CRYPTOPP_BOOL_SSE4_INTRINSICS_AVAILABLE 1
 #else
 #define CRYPTOPP_BOOL_SSE4_INTRINSICS_AVAILABLE 0
@@ -207,7 +205,7 @@ namespace cryptopp_crc
 	//!   In <em>all</em> cases, if <tt>CRYPTOPP_ALLOW_UNALIGNED_DATA_ACCESS</tt> is defined, then the
 	//!   function returns 1.
 	template <class T>
-	inline unsigned int GetAlignmentOf(T *dummy = nullptr)	// VC60 workaround
+	inline unsigned int GetAlignmentOf(T *dummy = NULL)	// VC60 workaround
 	{
 		// GCC 4.6 (circa 2008) and above aggressively uses vectorization.
 #if defined(CRYPTOPP_ALLOW_UNALIGNED_DATA_ACCESS)

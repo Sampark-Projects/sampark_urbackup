@@ -403,7 +403,7 @@ bool SparseFile::Resize(int64 new_size, bool set_sparse)
 	return backing_file->Resize(mapToBackingOffset(new_size), set_sparse);
 }
 
-std::vector<IFsFile::SFileExtent> SparseFile::getFileExtents(int64 starting_offset, int64 block_size, bool & more_data, unsigned int flags)
+std::vector<IFsFile::SFileExtent> SparseFile::getFileExtents(int64 starting_offset, int64 block_size, bool & more_data)
 {
 	return std::vector<SFileExtent>();
 }

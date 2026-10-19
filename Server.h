@@ -45,10 +45,10 @@ struct SDatabase
 	std::map<THREAD_ID, IDatabaseInt*> tmap;
 	std::vector<std::pair<std::string,std::string> > attach;
 	size_t allocation_chunk_size;
-	std::unique_ptr<ISharedMutex> single_user_mutex;
-	std::unique_ptr<IMutex> lock_mutex;
-	std::unique_ptr<int> lock_count;
-	std::unique_ptr<ICondition> unlock_cond;
+	std::auto_ptr<ISharedMutex> single_user_mutex;
+	std::auto_ptr<IMutex> lock_mutex;
+	std::auto_ptr<int> lock_count;
+	std::auto_ptr<ICondition> unlock_cond;
 	str_map params;
 
 private:
@@ -73,7 +73,6 @@ public:
 	virtual void setLogCircularBufferSize(size_t size);
 	virtual std::vector<SCircularLogEntry> getCicularLogBuffer(size_t minid);
 	virtual void Log(const std::string &pStr, int LogLevel=LL_INFO);
-	virtual void setLogRotationFiles(size_t n);
 	virtual bool Write(THREAD_ID tid, const std::string &str, bool cached=true);
 	virtual bool WriteRaw(THREAD_ID tid, const char *buf, size_t bsize, bool cached=true);
 
@@ -147,6 +146,7 @@ public:
 	virtual void DisconnectStream(IPipe *pipe);
 	virtual std::string LookupHostname(const std::string& pIp);
 
+	virtual std::vector<std::string> getStreamPipeList();
 	virtual bool RegisterPluginPerThreadModel(IPluginMgr *pPluginMgr, std::string pName);
 	virtual bool RegisterPluginThreadsafeModel(IPluginMgr *pPluginMgr, std::string pName);
 
@@ -160,7 +160,7 @@ public:
 	virtual IFsFile* openFile(std::string pFilename, int pMode=0);
 	virtual IFsFile* openFileFromHandle(void *handle, const std::string& pFilename);
 	virtual IFsFile* openTemporaryFile(void);
-	virtual IMemFile* openMemoryFile(const std::string& name, bool mlock_mem);
+	virtual IFile* openMemoryFile(void);
 	virtual bool deleteFile(std::string pFilename);
 	virtual bool fileExists(std::string pFilename);
 
@@ -219,8 +219,6 @@ public:
 	virtual int getRecvWindowSize();
 #endif
 
-	void mallocFlushTcache();
-
 private:
 
 	void logToCircularBuffer(const std::string& msg, int loglevel);
@@ -230,7 +228,7 @@ private:
 
 	void rotateLogfile();
 
-	IPipe* ConnectStream(const SLookupBlockingResult& lookup_result, unsigned short pPort, unsigned int pTimeoutms);
+	IPipe* ConnectStream(const std::string& connect_str, const SLookupBlockingResult& lookup_result, unsigned short pPort, unsigned int pTimeoutms);
 
 
 	int loglevel;

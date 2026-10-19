@@ -13,7 +13,7 @@ namespace
 ClientBitmap::ClientBitmap(std::string fn)
 	: has_error(false)
 {
-	std::unique_ptr<IFile> bitmap_file(Server->openFile(fn, MODE_READ));
+	std::auto_ptr<IFile> bitmap_file(Server->openFile(fn, MODE_READ));
 
 	init(bitmap_file.get());
 }
@@ -26,7 +26,7 @@ ClientBitmap::ClientBitmap(IFile * bitmap_file)
 
 void ClientBitmap::init(IFile * bitmap_file)
 {
-	if (bitmap_file == nullptr)
+	if (bitmap_file == NULL)
 	{
 		has_error = true;
 		return;

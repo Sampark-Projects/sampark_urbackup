@@ -51,7 +51,7 @@ extern IServer* Server;
 #define UnloadActions UnloadActions_httpserver
 #endif
 
-CHTTPService* http_service=nullptr;
+CHTTPService* http_service=NULL;
 std::vector<std::string> allowed_urls;
 
 DLLEXPORT void LoadActions(IServer* pServer)

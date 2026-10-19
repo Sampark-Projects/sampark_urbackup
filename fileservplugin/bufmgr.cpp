@@ -68,7 +68,7 @@ char* CBufMgr::getBuffer(void)
 	}
 	else
 	{
-		return nullptr;
+		return NULL;
 	}
 }
 

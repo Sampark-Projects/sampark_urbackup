@@ -61,7 +61,7 @@ struct VHDDynamicHeader
 
 class CompressedFile;
 
-class VHDFile : public IVHDFile
+class VHDFile : public IVHDFile, public IFile
 {
 public:
 	VHDFile(const std::string &fn, bool pRead_only, uint64 pDstsize, unsigned int pBlocksize=2*1024*1024, bool fast_mode=false, bool compress=false, size_t compress_n_threads=0);
@@ -121,6 +121,8 @@ public:
 	virtual bool makeFull(_i64 fs_offset, IVHDWriteCallback* write_callback);
 
 	virtual bool setUnused(_i64 unused_start, _i64 unused_end);
+
+	static size_t getNumCompThreads(bool read_only);
 
 private:
 

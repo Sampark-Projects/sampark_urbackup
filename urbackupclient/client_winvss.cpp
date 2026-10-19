@@ -35,6 +35,9 @@
 
 namespace
 {
+	const int vss_wait_timeout = 2 * 60 * 1000; // 2 min
+	const int vss_wait_timeout_long = 10 * 60 * 1000;
+
 	std::string sortHex(UINT i)
 	{
 		UINT bi = big_endian(i);
@@ -146,7 +149,7 @@ void IndexThread::clearContext(SShadowCopyContext& context)
 	}
 }
 
-bool IndexThread::wait_for(IVssAsync *vsasync, const std::string& error_prefix)
+bool IndexThread::wait_for(IVssAsync *vsasync, const std::string& error_prefix, const int timeoutms)
 {
 	if (vsasync == NULL)
 	{
@@ -154,14 +157,27 @@ bool IndexThread::wait_for(IVssAsync *vsasync, const std::string& error_prefix)
 		return false;
 	}
 
-	CHECK_COM_RESULT(vsasync->Wait());
+	const int64 starttime = Server->getTimeMS();
+
+	CHECK_COM_RESULT(vsasync->Wait(timeoutms <=0 ? INFINITE : 1000));
 
 	HRESULT res;
 	CHECK_COM_RESULT(vsasync->QueryStatus(&res, NULL));
 
 	while (res == VSS_S_ASYNC_PENDING)
 	{
-		CHECK_COM_RESULT(vsasync->Wait());
+		if (timeoutms > 0 && Server->getTimeMS() - starttime > timeoutms)
+		{
+			res = vsasync->Cancel();
+			if (res != VSS_S_ASYNC_FINISHED)
+			{
+				VSSLog(error_prefix + ". Timeout after " + PrettyPrintTime(Server->getTimeMS() - starttime), LL_ERROR);
+				vsasync->Release();
+				return false;
+			}
+		}
+
+		CHECK_COM_RESULT(vsasync->Wait(timeoutms <= 0 ? INFINITE : 1000));
 
 		CHECK_COM_RESULT(vsasync->QueryStatus(&res, NULL));
 	}
@@ -273,13 +289,13 @@ bool IndexThread::checkErrorAndLog(BSTR pbstrWriter, VSS_WRITER_STATE pState, HR
 bool IndexThread::check_writer_status(IVssBackupComponents *backupcom, std::string& errmsg, int loglevel, bool continue_on_failure, 
 	const std::vector<VSS_ID>& critical_writers, bool* critical_failure, bool* retryable_error)
 {
-	if (critical_failure != nullptr)
+	if (critical_failure != NULL)
 		*critical_failure = false;
 
 	IVssAsync *pb_result;
 	CHECK_COM_RESULT_RETURN(backupcom->GatherWriterStatus(&pb_result));
 
-	if (!wait_for(pb_result, "Gathering writer status failed"))
+	if (!wait_for(pb_result, "Gathering writer status failed", vss_wait_timeout))
 	{
 		VSSLog("Error while waiting for result from GatherWriterStatus", LL_ERROR);
 		return false;
@@ -472,7 +488,7 @@ bool IndexThread::start_shadowcopy_win(SCDirs * dir, std::string &wpath, bool fo
 	const int max_tries = 3;
 	int tries = max_tries;
 	bool retryable_error = true;
-	IVssBackupComponents *backupcom = nullptr;
+	IVssBackupComponents *backupcom = NULL;
 	while (tries>0 && retryable_error)
 	{
 		CHECK_COM_RESULT_RELEASE(CreateVssBackupComponents(&backupcom));
@@ -492,7 +508,7 @@ bool IndexThread::start_shadowcopy_win(SCDirs * dir, std::string &wpath, bool fo
 		IVssAsync *pb_result;
 
 		CHECK_COM_RESULT_RELEASE(backupcom->GatherWriterMetadata(&pb_result));
-		if (!wait_for(pb_result, "Gathering writer status failed"))
+		if (!wait_for(pb_result, "Gathering writer status failed", vss_wait_timeout))
 		{
 			backupcom->AbortBackup();
 			backupcom->Release();
@@ -513,7 +529,7 @@ bool IndexThread::start_shadowcopy_win(SCDirs * dir, std::string &wpath, bool fo
 			{
 				VSSLog("Selecting components to backup failed", LL_ERROR);
 				backupcom->Release();
-				backupcom = nullptr;
+				backupcom = NULL;
 				return false;
 			}
 
@@ -521,7 +537,7 @@ bool IndexThread::start_shadowcopy_win(SCDirs * dir, std::string &wpath, bool fo
 			{
 				VSSLog("Selected no components to backup", LL_INFO);
 				backupcom->Release();
-				backupcom = nullptr;
+				backupcom = NULL;
 				return true;
 			}
 
@@ -636,7 +652,7 @@ bool IndexThread::start_shadowcopy_win(SCDirs * dir, std::string &wpath, bool fo
 
 
 		CHECK_COM_RESULT_RELEASE(backupcom->PrepareForBackup(&pb_result));
-		if (!wait_for(pb_result, "Preparing backup failed"))
+		if (!wait_for(pb_result, "Preparing backup failed", vss_wait_timeout_long))
 		{
 			backupcom->AbortBackup();
 			backupcom->Release();
@@ -647,7 +663,7 @@ bool IndexThread::start_shadowcopy_win(SCDirs * dir, std::string &wpath, bool fo
 		check_writer_status(backupcom, errmsg, LL_WARNING, true, critical_writers, NULL, &retryable_error);
 
 		CHECK_COM_RESULT_RELEASE(backupcom->DoSnapshotSet(&pb_result));
-		if (!wait_for(pb_result, "Starting snapshot set failed"))
+		if (!wait_for(pb_result, "Starting snapshot set failed", vss_wait_timeout_long))
 		{
 			backupcom->AbortBackup();
 			backupcom->Release();
@@ -711,7 +727,7 @@ bool IndexThread::start_shadowcopy_win(SCDirs * dir, std::string &wpath, bool fo
 			CHECK_COM_RESULT_OK(backupcom->BackupComplete(&pb_result), bcom_ok);
 			if (bcom_ok)
 			{
-				wait_for(pb_result, "Completing backup with error status failed");
+				wait_for(pb_result, "Completing backup with error status failed", vss_wait_timeout_long);
 			}
 
 #ifndef VSS_XP
@@ -731,7 +747,7 @@ bool IndexThread::start_shadowcopy_win(SCDirs * dir, std::string &wpath, bool fo
 #endif
 #endif
 			backupcom->Release();
-			backupcom = nullptr;
+			backupcom = NULL;
 
 			Server->wait(30000);
 		}
@@ -966,7 +982,7 @@ bool IndexThread::deleteShadowcopyWin(SCDirs *dir)
 	CHECK_COM_RESULT_OK(backupcom->BackupComplete(&pb_result), bcom_ok);
 	if (bcom_ok)
 	{
-		if (!wait_for(pb_result, "Completing backup failed"))
+		if (!wait_for(pb_result, "Completing backup failed", vss_wait_timeout_long))
 		{
 			ok = false;
 		}
@@ -1040,7 +1056,7 @@ void IndexThread::initVss()
 
 bool IndexThread::deleteSavedShadowCopyWin(SShadowCopy& scs, SShadowCopyContext& context)
 {
-	IVssBackupComponents *backupcom = nullptr;
+	IVssBackupComponents *backupcom = NULL;
 	if (context.backupcom == NULL)
 	{
 		CHECK_COM_RESULT_RELEASE(CreateVssBackupComponents(&backupcom));
@@ -1100,7 +1116,7 @@ bool IndexThread::deleteSavedShadowCopyWin(SShadowCopy& scs, SShadowCopyContext&
 bool IndexThread::getVssSettings()
 {
 	std::string settings_fn = "urbackup/data/settings.cfg";
-	std::unique_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
+	std::auto_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
 	vss_select_components.clear();
 	vss_select_all_components = false;
 	bool select_default_components = false;
@@ -1589,7 +1605,7 @@ std::string IndexThread::getVolPath(const std::string& bpath)
 
 bool IndexThread::indexVssComponents(VSS_ID ssetid, bool use_db, const std::vector<SCRef*>& past_refs, std::fstream &outfile)
 {
-	IVssBackupComponents* backupcom = nullptr;
+	IVssBackupComponents* backupcom = NULL;
 	for (size_t i = 0; i < sc_refs.size(); ++i)
 	{
 		if (sc_refs[i]->ssetid == ssetid)
@@ -1599,7 +1615,7 @@ bool IndexThread::indexVssComponents(VSS_ID ssetid, bool use_db, const std::vect
 		}
 	}
 
-	if (backupcom == nullptr)
+	if (backupcom == NULL)
 	{
 		VSSLog("Could not find backupcom for snapshot set " + convert(ssetid), LL_ERROR);
 		return false;
@@ -2231,11 +2247,11 @@ bool IndexThread::addFiles(IVssWMFiledesc* wmFile, VSS_ID ssetid, const std::vec
 	{
 		SBackupDir backup_dir;
 
-		cd->addBackupDir(named_prefix, path, 0, index_flags, c_group_vss_components, 0, index_facet_id);
+		cd->addBackupDir(named_prefix, path, 0, index_flags, c_group_vss_components, 0);
 
 		backup_dir.id = static_cast<int>(db->getLastInsertID());
 
-		if (dwt != nullptr)
+		if (dwt != NULL)
 		{
 			std::string msg = "A" + path;
 			dwt->getPipe()->Write(msg);
@@ -2418,7 +2434,7 @@ void IndexThread::removeUnconfirmedVssDirs()
 			{
 				VSSLog("Removing unconfirmed VSS path \"" + backup_dirs[i].tname + "\" to \"" + backup_dirs[i].path, LL_INFO);
 
-				if (dwt != nullptr)
+				if (dwt != NULL)
 				{
 					std::string msg = "D" + backup_dirs[i].path;
 					dwt->getPipe()->Write(msg);
@@ -2428,7 +2444,7 @@ void IndexThread::removeUnconfirmedVssDirs()
 
 				removeDir(starttoken, backup_dirs[i].tname);
 
-				if (filesrv != nullptr)
+				if (filesrv != NULL)
 				{
 					filesrv->removeDir(backup_dirs[i].tname, starttoken);
 				}

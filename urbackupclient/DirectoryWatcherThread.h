@@ -38,7 +38,7 @@ public:
 	void On_DirAdded( const std::string & strFileName, bool closed );
     void On_FileModified(const std::string & strFileName, bool closed);
 	void On_FileOpen(const std::string & strFileName);
-	void On_ResetAll(const std::string &vol);
+	void On_ResetAll(const std::string &vol, const bool has_transaction);
 	void On_DirRemoved(const std::string & strDirName, bool closed);
 	void Commit(const std::vector<IChangeJournalListener::SSequence>& sequences);
 
@@ -83,7 +83,7 @@ private:
 
 	int64 last_backup_filetime;
 
-	std::unique_ptr<ContinuousWatchEnqueue> continuous_watch;
+	std::auto_ptr<ContinuousWatchEnqueue> continuous_watch;
 
 	static std::vector<std::string> open_files;
 };

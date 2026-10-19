@@ -28,7 +28,7 @@ public:
 
 	virtual void On_FileOpen(const std::string & strFileName);
 
-	virtual void On_ResetAll( const std::string & vol );
+	virtual void On_ResetAll( const std::string & vol, const bool has_transaction);
 
 	virtual void On_DirRemoved( const std::string & strDirName, bool closed );
 
@@ -77,7 +77,7 @@ private:
 
 	void On_FileModifiedInt( const std::string & strFileName );
 
-	void On_ResetAllInt( const std::string & vol );
+	void On_ResetAllInt( const std::string & vol, const bool has_transaction);
 
 	void On_DirRemovedInt( const std::string & strDirName );
 
@@ -93,7 +93,7 @@ private:
 	std::vector<int> include_depth;
 	std::vector<std::string> include_prefix;
 
-	std::unique_ptr<JournalDAO> journal_dao;
+	std::auto_ptr<JournalDAO> journal_dao;
 
 	CWData queue;
 

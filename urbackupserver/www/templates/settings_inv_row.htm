@@ -93,16 +93,6 @@
 				</div>
 				<div id="backup_dirs_optional_sw" style="display: inline"></div>
 			</div>
-			<div class="form-group">
-				<label class="col-sm-4 control-label" for="ransomware_canary_paths">{tRansomware canary paths:}</label>
-				<div class="col-sm-6" id="ransomware_canary_paths_div">
-					<div class="input-group">
-						<input type="text" class="form-control" id="ransomware_canary_paths" value="{ransomware_canary_paths|s}"/>
-						<div class="input-group-addon"><a href="help.htm#ransomware_canary_paths" target="_blank">?</a></div>
-					</div>
-				</div>
-				<div id="ransomware_canary_paths_sw" style="display: inline"></div>
-			</div>
 		</form>
 	</div>
 	</div>
@@ -178,8 +168,8 @@
 					<select class="form-control" id="image_file_format">
 						<option value="vhdz" {image_file_format_0}>{tCompressed VHD (Compressed non-standard Virtual HardDisk)}</option>
 						<option value="vhd" {image_file_format_1}>{tVHD (Virtual HardDisk)}</option>
-						<option value="vhdx" {image_file_format_2}>{tCompressed VHDX (Compressed non-standard Virtual HardDisk v2) (beta)}</option>
-						<option value="vhd" {image_file_format_3}>{tVHDX (Virtual HardDisk v2) (beta)}</option>
+						<option value="vhdxz" {image_file_format_2}>{tCompressed VHDX (Compressed non-standard Virtual HardDisk v2) (beta)}</option>
+						<option value="vhdx" {image_file_format_3}>{tVHDX (Virtual HardDisk v2) (beta)}</option>
 						{?cowraw_available}
 						<option value="cowraw" {image_file_format_4}>{tRaw copy-on-write file}</option>
 						{/cowraw_available}
@@ -281,6 +271,13 @@
 				</div>
 				<div id="allow_component_restore_sw" style="display: inline"></div>
 			</div>
+			<div class="form-group">
+				<label class="col-sm-4 control-label" for="allow_all_clients_restore">{tAllow clients to restore/download backups of all clients given user credentials}:</label>
+				<div class="col-sm-6">
+					<label><input type="checkbox" id="allow_all_clients_restore" {allow_all_clients_restore}/></label>
+				</div>
+				<div id="allow_all_clients_restore_sw" style="display: inline"></div>
+			</div>
 		</form>
 	</div>
 	</div>
@@ -301,13 +298,6 @@
 					</div>
 				</div>
 				<div id="startup_backup_delay_sw" style="display: inline"></div>
-			</div>
-			<div class="form-group">
-				<label class="col-sm-4 control-label" for="pause_if_windows_unlocked">{tPause backups if Windows is unlocked}:</label>
-				<div class="col-sm-6">
-					<label><input type="checkbox" id="pause_if_windows_unlocked" {pause_if_windows_unlocked}/></label>
-				</div>
-				<div id="pause_if_windows_unlocked_sw" style="display: inline"></div>
 			</div>
 			{/main_client}
 			<div class="form-group" id="backup_window_row">
@@ -390,7 +380,7 @@
 			{?main_client}
 			{no_compname_start|s}
 			<div class="form-group">
-				<label class="col-sm-4 control-label" for="virtual_clients">{tAdditional virtual sub client names}:</label>
+				<label class="col-sm-4 control-label" for="virtual_clients">{tAdditional virtual sub client names}</label>
 				<div class="col-sm-6" id="virtual_clients_div">
 					<input type="text" class="form-control" id="virtual_clients" value="{virtual_clients}"/>
 				</div>
@@ -398,36 +388,6 @@
 			</div>
 			{no_compname_end|s}
 			{/main_client}
-			<div class="form-group">
-				<label class="col-sm-4 control-label" for="backup_dest_url">{tBackup destination URL}:</label>
-				<div class="col-sm-6" id="backup_dest_url_div">
-					<input type="text" class="form-control" id="backup_dest_url" value="{backup_dest_url|s}"/>
-				</div>
-				<div id="backup_dest_url_sw" style="display: inline"></div>
-			</div>
-			<div class="form-group">
-				<label class="col-sm-4 control-label" for="backup_dest_params">{tBackup destination parameters}:</label>
-				<div class="col-sm-6" id="backup_dest_params_div">
-					<input type="text" class="form-control" id="backup_dest_params" value="{backup_dest_params|s}"/>
-				</div>
-				<div id="backup_dest_params_sw" style="display: inline"></div>
-			</div>
-			<div class="form-group">
-				<label class="col-sm-4 control-label" for="backup_dest_secret_params">{tBackup destination secret server parameters}:</label>
-				<div class="col-sm-6" id="backup_dest_secret_params_div">
-					<input type="text" class="form-control" id="backup_dest_secret_params" value="{backup_dest_secret_params|s}"/>
-				</div>
-				<div id="backup_dest_secret_params_sw" style="display: inline"></div>
-			</div>
-			<div class="form-group">
-				<label class="col-sm-4 control-label" for="backup_unlocked_window">{tOnly run backups if unlocked in this backup window}:</label>
-				<div class="col-sm-6">
-					<div class="input-group">
-						<input type="text" class="form-control" id="backup_unlocked_window" value="{backup_unlocked_window}"/>
-					</div>
-				</div>
-				<div id="backup_unlocked_window_sw" style="display: inline"></div>
-			</div>
 		</form>
 	</div>
 	</div>
@@ -499,19 +459,26 @@
 	<div class="panel panel-default">
 	<div class="panel-body">
 		<form class="form-horizontal" role="form">
-			<div class="form-group">
-				<label class="col-sm-4 control-label" for="alert_script">{tAlert script}:</label>
-				<div class="col-sm-6">
-					<select class="form-control" id="alert_script" onChange="updateAlertScriptParams()">{alert_scripts|s}</select>
+			<div class="row">
+				<div class="col-sm-11">
+					<div class="form-group">
+						<label class="col-sm-4 control-label" for="alert_script">{tAlert script}:</label>
+						<div class="col-sm-6">
+							<select class="form-control" id="alert_script" onChange="updateAlertScriptParams()">{alert_scripts|s}</select>
+						</div>
+						{?can_edit_scripts}
+							<a href="javascript: show_scripts1()">{tEdit scripts}</a>
+						{/can_edit_scripts}
+					</div>
 				</div>
-				{?can_edit_scripts}
-					<a href="javascript: show_scripts1()">{tEdit scripts}</a>
-				{/can_edit_scripts}
 				<div id="alert_script_sw" style="float: right; margin-left: 10pt; margin-right: 10pt"></div>
-			</div>			
-			<div id="alert_script_params_container">
-				{mod_alert_params|s}
 			</div>
+			<div class="row">		
+				<div id="alert_script_params_container" class="col-sm-11">
+					{mod_alert_params|s}
+				</div>
+				<div id="alert_params_sw" style="float: right; margin-left: 10pt; margin-right: 10pt"></div>
+			</div>	
 		</form>
 	</div>
 	</div>
@@ -565,7 +532,7 @@
 			<div class="form-group">
 				<label class="col-sm-4 control-label" for="internet_server">{tServer URL clients connect to}:</label>
 				<div class="col-sm-6">
-					<input type="text" class="form-control" id="internet_server" value="{internet_server}" placeholder="ws://example.com:55414/socket"/>
+					<input type="text" class="form-control" id="internet_server" value="{internet_server}" placeholder="{internet_server_url_placeholder}"/>
 				</div>
 			</div>
 			<div class="form-group">
@@ -892,20 +859,20 @@
 			</div>
 			<div class="form-group">
 				<label class="col-sm-4 control-label" for="image_snapshot_groups">{tVolumes to snapshot in groups during image backups}</label>
-				<div class="col-sm-6">
+				<div class="col-sm-6" id="image_snapshot_groups_div">
 					<label><input type="text" class="form-control" id="image_snapshot_groups" value="{image_snapshot_groups}"/></label>
 				</div>
 				<div id="image_snapshot_groups_sw" style="display: inline"></div>
 			</div>
 			<div class="form-group">
 				<label class="col-sm-4 control-label" for="file_snapshot_groups">{tVolumes to snapshot in groups during file backups}</label>
-				<div class="col-sm-6">
+				<div class="col-sm-6" id="file_snapshot_groups_div">
 					<label><input type="text" class="form-control" id="file_snapshot_groups" value="{file_snapshot_groups}"/></label>
 				</div>
 				<div id="file_snapshot_groups_sw" style="display: inline"></div>
 			</div>
 			<div class="form-group">
-				<label class="col-sm-4 control-label" for="vss_select_components">{tWindows components backup configuration}</label>
+				<label class="col-sm-4 control-label" for="vss_seletc_components">{tWindows components backup configuration}</label>
 				<div class="col-sm-6" id="vss_select_components_div">
 					<label><input type="text" class="form-control" id="vss_select_components" value="{vss_select_components}"/></label>
 				</div>
@@ -919,12 +886,27 @@
 				<div id="client_settings_tray_access_pw_sw" style="display: inline"></div>
 			</div>
 			<div class="form-group">
+				<label class="col-sm-4 control-label" for="client_rename_detection">{tDetect if this client has been renamed and try to not create a second client}</label>
+				<div class="col-sm-6">
+					<label><input type="checkbox" id="client_rename_detection" value="true" {client_rename_detection}/></label>
+				</div>
+				<div id="client_rename_detection_sw" style="display: inline"></div>
+			</div>
+			<div class="form-group">
+				<label class="col-sm-4 control-label" for="max_running_jobs_per_client_group">{tMaximum number of simultaneous jobs per client group}</label>
+				<div class="col-sm-6">
+					<label><input type="text" class="form-control" id="max_running_jobs_per_client_group" value="{max_running_jobs_per_client_group}"/></label>
+				</div>
+				<div id="max_running_jobs_per_client_group_sw" style="display: inline"></div>
+			</div>
+			<div class="form-group">
 				<label class="col-sm-4 control-label" for="download_threads">Beta: {tNumber of parallel file download threads per file backup}</label>
 				<div class="col-sm-6">
 					<label><input type="text" class="form-control" id="download_threads" value="{download_threads}"/></label>
 				</div>
 				<div id="download_threads_sw" style="display: inline"></div>
 			</div>
+			<!--
 			<div class="form-group">
 				<label class="col-sm-4 control-label" for="hash_threads">Beta: {tNumber of parallel server file hash threads per file backup}</label>
 				<div class="col-sm-6">
@@ -939,6 +921,7 @@
 				</div>
 				<div id="client_hash_threads_sw" style="display: inline"></div>
 			</div>
+			-->
 			<div class="form-group">
 				<label class="col-sm-4 control-label" for="image_compress_threads">Beta: {tNumber of threads to use for VHDZ compression (0: auto)}</label>
 				<div class="col-sm-6">

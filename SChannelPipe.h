@@ -50,6 +50,12 @@ public:
 
 	virtual void resetTransferedBytes(void);
 
+	virtual void setUsageString(const std::string& str);
+
+	virtual bool setCompressionSettings(const SCompressionSettings& params);
+
+	virtual bool setOption(const SocketOption opt);
+
 private:
 	bool ssl_connect_negotiate(int timeoutms, bool do_read);
 
@@ -73,6 +79,7 @@ private:
 	std::vector<char> header_buf;
 	std::vector<char> trailer_buf;
 	bool has_error;
+	bool incomplete_message;
 
 	SecPkgContext_StreamSizes stream_sizes;
 };

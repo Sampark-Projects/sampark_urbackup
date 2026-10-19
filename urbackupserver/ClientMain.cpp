@@ -16,6 +16,7 @@
 *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 **************************************************************************/
 #include "ClientMain.h"
+#include "../Interface/Mutex.h"
 #include "server_ping.h"
 #include "database.h"
 #include "../stringtools.h"
@@ -58,7 +59,6 @@
 #include <stack>
 #include "FullFileBackup.h"
 #include "IncrFileBackup.h"
-#include "LocalBackup.h"
 #include "ImageBackup.h"
 #include "ContinuousBackup.h"
 #include "ThrottleUpdater.h"
@@ -68,6 +68,7 @@
 #include "../urbackupcommon/InternetServicePipe2.h"
 #include "../urbackupcommon/CompressedPipe2.h"
 #include "../urbackupcommon/CompressedPipeZstd.h"
+#include "../urbackupcommon/os_functions.h"
 
 extern IUrlFactory *url_fak;
 extern ICryptoFactory *crypto_fak;
@@ -104,11 +105,17 @@ IMutex* ClientMain::ecdh_key_exchange_mutex = NULL;
 std::vector<std::pair<IECDHKeyExchange*, int64> > ClientMain::ecdh_key_exchange_buffer;
 IMutex* ClientMain::client_uid_reset_mutex = NULL;
 ICondition* ClientMain::client_uid_reset_cond = NULL;
+IMutex* ClientMain::client_startup_mutex = NULL;
+ICondition* ClientMain::client_startup_cond = NULL;
+std::set<std::string> ClientMain::client_startup;
+IMutex* ClientMain::client_group_job_mutex = NULL;
+std::map<int, int> ClientMain::client_group_jobs;
+
 
 ClientMain::ClientMain(IPipe *pPipe, FileClient::SAddrHint pAddr, const std::string &pName,
 	const std::string& pSubName, const std::string& pMainName, int filebackup_group_offset, bool internet_connection,
 	bool use_file_snapshots, bool use_image_snapshots, bool use_reflink)
-	: internet_connection(internet_connection), client_throttler(NULL),
+	: internet_connection(internet_connection), server_settings(NULL), client_throttler(NULL),
 	  use_file_snapshots(use_file_snapshots), use_image_snapshots(use_image_snapshots), use_reflink(use_reflink),
 	  backup_dao(NULL), client_updated_time(0), continuous_backup(NULL),
 	  clientsubname(pSubName), filebackup_group_offset(filebackup_group_offset), needs_authentification(false),
@@ -165,7 +172,6 @@ ClientMain::ClientMain(IPipe *pPipe, FileClient::SAddrHint pAddr, const std::str
 	session_identity_refreshtime = 0;
 	connection_metered = false;
 	do_reauthenticate = false;
-	windows_locked = false;
 	update_capa = false;
 }
 
@@ -193,6 +199,9 @@ void ClientMain::init_mutex(void)
 	ecdh_key_exchange_mutex = Server->createMutex();
 	client_uid_reset_cond = Server->createCondition();
 	client_uid_reset_mutex = Server->createMutex();
+	client_startup_mutex = Server->createMutex();
+	client_startup_cond = Server->createCondition();
+	client_group_job_mutex = Server->createMutex();
 }
 
 void ClientMain::destroy_mutex(void)
@@ -203,6 +212,9 @@ void ClientMain::destroy_mutex(void)
 	Server->destroy(ecdh_key_exchange_mutex);
 	Server->destroy(client_uid_reset_cond);
 	Server->destroy(client_uid_reset_mutex);
+	Server->destroy(client_startup_mutex);
+	Server->destroy(client_startup_cond);
+	Server->destroy(client_group_job_mutex);
 }
 
 void ClientMain::wakeupClientUidReset()
@@ -223,6 +235,8 @@ void ClientMain::unloadSQL(void)
 
 void ClientMain::operator ()(void)
 {
+	ScopedStartStartup limit_startup(this);
+
 	db = Server->getDatabase(Server->getThreadID(), URBACKUPDB_SERVER);
 	DBScopedFreeMemory free_db_memory(db);
 
@@ -293,10 +307,10 @@ void ClientMain::operator ()(void)
 
 	std::string identity = getIdentity();	
 
-	std::unique_ptr<ServerBackupDao> local_server_backup_dao(new ServerBackupDao(db));
+	std::auto_ptr<ServerBackupDao> local_server_backup_dao(new ServerBackupDao(db));
 	backup_dao = local_server_backup_dao.get();
 
-	clientid=getClientID(db, clientname, server_settings.get(), NULL, nullptr, nullptr, &perm_uid);
+	clientid=getClientID(db, clientname, server_settings.get(), NULL);
 
 	if(clientid==-1)
 	{
@@ -423,7 +437,7 @@ void ClientMain::operator ()(void)
 	ServerLogger::Log(logid, "Getting client settings...", LL_DEBUG);
 	ServerStatus::setStatusError(clientname, se_settings);
 	bool settings_doesnt_exist=false;
-	if(server_settings->getSettings()->allow_overwrite && !getClientSettings(settings_doesnt_exist))
+	if(!getClientSettings(settings_doesnt_exist))
 	{
 		if(!settings_doesnt_exist)
 		{
@@ -473,6 +487,7 @@ void ClientMain::operator ()(void)
 	bool skip_checking=false;
 
 	ServerStatus::setStatusError(clientname, se_none);
+	limit_startup.finishStartup();
 
 	if( server_settings->getSettings()->startup_backup_delay>0
 		&& (!do_full_backup_now && !do_incr_backup_now
@@ -486,8 +501,6 @@ void ClientMain::operator ()(void)
 
 	bool do_exit_now=false;
 	
-	do_full_backup_now = true;
-
 	while(true)
 	{
 		if(!skip_checking)
@@ -498,8 +511,7 @@ void ClientMain::operator ()(void)
 
 			for (size_t i = 0; i<backup_queue.size();)
 			{
-				if (backup_queue[i].ticket != ILLEGAL_THREADPOOL_TICKET
-					|| backup_queue[i].running)
+				if (backup_queue[i].ticket != ILLEGAL_THREADPOOL_TICKET)
 				{
 					if (!backup_queue[i].backup->isFileBackup())
 					{
@@ -551,14 +563,12 @@ void ClientMain::operator ()(void)
 						}
 					}
 
-					if ( isBackupFinished(backup_queue[i])
+					if ( Server->getThreadPool()->waitFor(backup_queue[i].ticket, 0)
 						 && (dynamic_cast<ImageBackup*>(backup_queue[i].backup)==NULL 
 							 || dynamic_cast<ImageBackup*>(backup_queue[i].backup)->getDependencies(false).empty()) )
 					{
-						if (backup_queue[i].running)
-							stopBackupRunning(backup_queue[i].backup->isFileBackup());
-
 						ServerStatus::subRunningJob(clientmainname);
+						subRunningClientGroupJob(backup_queue[i].client_group);
 
 						if (!backup_queue[i].backup->getResult() &&
 							backup_queue[i].backup->shouldBackoff())
@@ -678,7 +688,7 @@ void ClientMain::operator ()(void)
 					ServerStatus::setStatusError(clientname, se_settings);
 					ServerLogger::Log(logid, "Getting client settings...", LL_DEBUG);
 					do_update_settings=false;
-					if(server_settings->getSettings()->allow_overwrite && !getClientSettings(settings_dont_exist))
+					if(!getClientSettings(settings_dont_exist))
 					{
 						ServerLogger::Log(logid, "Getting client settings failed -2", LL_ERROR);
 						received_client_settings=false;
@@ -782,7 +792,7 @@ void ClientMain::operator ()(void)
 					ServerLogger::Log(logid, "Cannot do image backup because no_images=true", LL_DEBUG);
 				if(!isBackupsRunningOkay(false))
 					ServerLogger::Log(logid, "Cannot do image backup because isBackupsRunningOkay()=false", LL_DEBUG);
-				if(!internet_no_images )
+				if(internet_no_images )
 					ServerLogger::Log(logid, "Cannot do image backup because internet_no_images=true", LL_DEBUG);
 			}
 
@@ -807,20 +817,10 @@ void ClientMain::operator ()(void)
 				&& (!isRunningFileBackup(filebackup_group_offset + c_group_default) || do_full_backup_now) )
 			{
 				SRunningBackup backup;
-				if (server_settings->getSettings()->backup_dest_url.empty())
-				{					
-					backup.backup = new FullFileBackup(this, clientid, clientname, clientsubname,
-						do_full_backup_now ? LogAction_AlwaysLog : LogAction_LogIfNotDisabled, filebackup_group_offset + c_group_default, use_tmpfiles,
-						tmpfile_path, use_reflink, use_file_snapshots, curr_server_token, convert(c_group_default), !do_full_backup_now);
-				}
-				else
-				{
-					backup.backup = new LocalBackup(this, clientid, clientname, clientsubname,
-						do_full_backup_now ? LogAction_AlwaysLog : LogAction_LogIfNotDisabled, true, false,
-						server_token, convert(c_group_default), !do_full_backup_now, filebackup_group_offset + c_group_default);
-				}
-
-				backup.group = filebackup_group_offset + c_group_default;
+				backup.backup = new FullFileBackup(this, clientid, clientname, clientsubname,
+					do_full_backup_now?LogAction_AlwaysLog:LogAction_LogIfNotDisabled, filebackup_group_offset + c_group_default, use_tmpfiles,
+					tmpfile_path, use_reflink, use_file_snapshots, curr_server_token, convert(c_group_default), !do_full_backup_now);
+				backup.group=filebackup_group_offset + c_group_default;
 
 				backup_queue.push_back(backup);
 
@@ -833,18 +833,9 @@ void ClientMain::operator ()(void)
 				&& (!isRunningFileBackup(filebackup_group_offset + c_group_default) || do_incr_backup_now) )
 			{
 				SRunningBackup backup;
-				if (server_settings->getSettings()->backup_dest_url.empty())
-				{
-					backup.backup = new IncrFileBackup(this, clientid, clientname, clientsubname,
-						do_incr_backup_now ? LogAction_AlwaysLog : LogAction_LogIfNotDisabled, filebackup_group_offset + c_group_default, use_tmpfiles,
-						tmpfile_path, use_reflink, use_file_snapshots, curr_server_token, convert(c_group_default), !do_incr_backup_now);
-				}
-				else
-				{
-					backup.backup = new LocalBackup(this, clientid, clientname, clientsubname,
-						do_incr_backup_now ? LogAction_AlwaysLog : LogAction_LogIfNotDisabled, true, true,
-						server_token, convert(c_group_default), !do_incr_backup_now, filebackup_group_offset + c_group_default);
-				}
+				backup.backup = new IncrFileBackup(this, clientid, clientname, clientsubname,
+					do_full_backup_now?LogAction_AlwaysLog:LogAction_LogIfNotDisabled, filebackup_group_offset + c_group_default, use_tmpfiles,
+					tmpfile_path, use_reflink, use_file_snapshots, curr_server_token, convert(c_group_default), !do_incr_backup_now);
 				backup.group=filebackup_group_offset + c_group_default;
 
 				backup_queue.push_back(backup);
@@ -942,20 +933,23 @@ void ClientMain::operator ()(void)
 
 			if(can_start)
 			{
-				while(ServerStatus::numRunningJobs(clientmainname)<server_settings->getSettings()->max_running_jobs_per_client)
+				int group_id = server_settings->getSettings()->group_id;
+				while(ServerStatus::numRunningJobs(clientmainname)<server_settings->getSettings()->max_running_jobs_per_client
+						&& numRunningClientGroupJobs(group_id)<server_settings->getSettings()->max_running_jobs_per_client_group)
 				{
 					bool started_job=false;
 					for(size_t i=0;i<backup_queue.size();++i)
 					{
-						bool filebackup = backup_queue[i].backup->isFileBackup();
+						bool filebackup = dynamic_cast<FileBackup*>(backup_queue[i].backup) != NULL;
 
 						if( backup_queue[i].ticket==ILLEGAL_THREADPOOL_TICKET
-							&& !backup_queue[i].running
 							&& (!backup_queue[i].backup->isScheduled() || inBackupWindow(backup_queue[i].backup) )
 							&& (!filebackup || !isRunningFileBackup(backup_queue[i].group, false) ) )
 						{
 							ServerStatus::addRunningJob(clientmainname);
+							addRunningClientGroupJob(group_id);
 							if(ServerStatus::numRunningJobs(clientmainname)<=server_settings->getSettings()->max_running_jobs_per_client
+								&& numRunningClientGroupJobs(group_id)<=server_settings->getSettings()->max_running_jobs_per_client_group
 								&& isBackupsRunningOkay(filebackup, true))
 							{
 								std::string tname = "backup main";
@@ -968,28 +962,14 @@ void ClientMain::operator ()(void)
 									tname = "ibackup main";
 								}
 
-								LocalBackup* localBackup = dynamic_cast<LocalBackup*>(backup_queue[i].backup);
-								if (localBackup == nullptr)
-								{
-									backup_queue[i].ticket = Server->getThreadPool()->execute(backup_queue[i].backup, tname);
-								}
-								else
-								{
-									backup_queue[i].running = true;
-
-									if (!localBackup->doBackup())
-									{
-										localBackup->setResult(false, false);
-									}
-									
-									running_local_backups.push_back(SRunningLocalBackup(localBackup->getLogId(),
-										localBackup->getStatusId(), localBackup->getBackupId()));
-								}
+								backup_queue[i].client_group = group_id;
+								backup_queue[i].ticket=Server->getThreadPool()->execute(backup_queue[i].backup, tname);
 								started_job=true;
 							}
 							else
 							{
 								ServerStatus::subRunningJob(clientmainname);
+								subRunningClientGroupJob(group_id);
 							}							
 							break;
 						}
@@ -1017,8 +997,8 @@ void ClientMain::operator ()(void)
 		else if(msg=="START BACKUP INCR") do_incr_backup_now=true;
 		else if(msg=="START BACKUP FULL") do_full_backup_now=true;
 		else if(msg=="UPDATE SETTINGS") do_update_settings=true;
-		else if(msg=="START IMAGE INCR") do_incr_image_now=true;
-		else if(msg=="START IMAGE FULL") do_full_image_now=true;
+		else if(msg=="START IMAGE INCR" && can_backup_images ) do_incr_image_now=true;
+		else if(msg=="START IMAGE FULL" && can_backup_images) do_full_image_now=true;
 		else if (msg == "UPDATE ACCESS KEY") do_update_access_key = true;
 		else if(next(msg, 0, "address"))
 		{
@@ -1081,7 +1061,8 @@ void ClientMain::operator ()(void)
 			}
 
 			std::string client_token_key;
-			if (restore_client_access_encryption)
+			if (restore_client_access_encryption
+				|| getProtocolVersions().restore_version<1)
 			{
 				client_token_key = "client_token";
 				if (crypto_fak == NULL)
@@ -1124,16 +1105,6 @@ void ClientMain::operator ()(void)
 				running_restores.push_back(SRunningRestore(restore_identity, log_id, status_id, restore_id));
 			}
 		}
-		else if (next(msg, 0, "BACKUP DONE?"))
-		{
-			str_map params;
-			ParseParamStrHttp(msg.substr(12), &params);
-
-			int64 status_id = watoi64(params["status_id"]);
-			updateLocalBackup(status_id, watoi(params["success"]) > 0,
-				watoi(params["should_backoff"]) > 0);
-			removeLocalBackup(status_id);
-		}
 
 		if(!msg.empty())
 		{
@@ -1148,6 +1119,7 @@ void ClientMain::operator ()(void)
 		{
 			Server->getThreadPool()->waitFor(backup_queue[i].ticket);
 			ServerStatus::subRunningJob(clientmainname);
+			subRunningClientGroupJob(backup_queue[i].client_group);
 		}
 
 		delete backup_queue[i].backup;
@@ -1181,30 +1153,23 @@ void ClientMain::prepareSQL(void)
 {
 	q_update_lastseen=db->Prepare("UPDATE clients SET lastseen=datetime(?, 'unixepoch') WHERE id=?", false);
 	q_update_setting=db->Prepare("UPDATE settings_db.settings SET value_client=?, use=?, use_last_modified=? WHERE key=? AND clientid=?", false);
-	q_insert_setting=db->Prepare("INSERT INTO settings_db.settings (key, value_client, clientid, use, use_last_modified) VALUES (?,?,?,?,?)", false);
+	q_insert_setting=db->Prepare("INSERT INTO settings_db.settings (key, value, value_client, clientid, use, use_last_modified) VALUES (?,?,?,?,?,?)", false);
 	q_get_setting = db->Prepare("SELECT value_client, use, use_last_modified FROM settings_db.settings WHERE clientid=? AND key=?", false);
 	q_get_unsent_logdata=db->Prepare("SELECT l.id AS id, strftime('%s', l.created) AS created, log_data.data AS logdata FROM (logs l INNER JOIN log_data ON l.id=log_data.logid) WHERE sent=0 AND clientid=?", false);
 	q_set_logdata_sent=db->Prepare("UPDATE logs SET sent=1 WHERE id=?", false);
 }
 
-int ClientMain::getClientID(IDatabase *db, const std::string &clientname, ServerSettings *server_settings, 
-	bool *new_client, std::string* authkey, int* client_group, std::string* perm_uid)
+int ClientMain::getClientID(IDatabase *db, const std::string &clientname, ServerSettings *server_settings, bool *new_client, std::string* authkey, int* client_group)
 {
 	if(new_client!=NULL)
 		*new_client=false;
 
-	IQuery *q=db->Prepare("SELECT id, perm_uid FROM clients WHERE name=?",false);
+	IQuery *q=db->Prepare("SELECT id FROM clients WHERE name=?",false);
 	if(q==NULL) return -1;
 
 	q->Bind(clientname);
 	db_results res=q->Read();
 	db->destroyQuery(q);
-
-	if (!res.empty() &&
-		perm_uid!=nullptr)
-	{
-		*perm_uid = res[0]["perm_uid"];
-	}
 
 	if(res.size()>0)
 		return watoi(res[0]["id"]);
@@ -1220,30 +1185,27 @@ int ClientMain::getClientID(IDatabase *db, const std::string &clientname, Server
 
 		if(server_settings==NULL || c_clients<server_settings->getSettings()->max_active_clients)
 		{
-			std::vector<char> uid(16);
-			Server->secureRandomFill(uid.data(), uid.size());
-
-			if (perm_uid != nullptr)
-			{
-				perm_uid->assign(uid.data(), uid.size());
-			}
-
 			DBScopedWriteTransaction trans(db);
-			IQuery *q_insert_newclient=db->Prepare("INSERT INTO clients "
-				"(name, lastseen,bytes_used_files,bytes_used_images,created,perm_uid) "
-				"VALUES (?, CURRENT_TIMESTAMP, 0, 0, strftime('%s', 'now'), ?)", false);
+			IQuery *q_insert_newclient=db->Prepare("INSERT INTO clients (name, lastseen,bytes_used_files,bytes_used_images,created) VALUES (?, CURRENT_TIMESTAMP, 0, 0, strftime('%s', 'now') )", false);
 			q_insert_newclient->Bind(clientname);
-			q_insert_newclient->Bind(uid.data(), uid.size());
 			q_insert_newclient->Write();
 			int rid=(int)db->getLastInsertID();
 			q_insert_newclient->Reset();
 			db->destroyQuery(q_insert_newclient);
 
-			IQuery *q_insert_setting=db->Prepare("INSERT INTO settings_db.settings (key,value, clientid) VALUES (?,?,?)", false);
+			IQuery *q_insert_setting=db->Prepare("INSERT INTO settings_db.settings (key,value, clientid, use) VALUES (?,?,?,?)", false);
 			std::string new_authkey = ServerSettings::generateRandomAuthKey();
 			q_insert_setting->Bind("internet_authkey");
 			q_insert_setting->Bind(new_authkey);
 			q_insert_setting->Bind(rid);
+			q_insert_setting->Bind(c_use_value);
+			q_insert_setting->Write();
+			q_insert_setting->Reset();
+
+			q_insert_setting->Bind("archive_update");
+			q_insert_setting->Bind("1");
+			q_insert_setting->Bind(rid);
+			q_insert_setting->Bind(c_use_value);
 			q_insert_setting->Write();
 			q_insert_setting->Reset();
 
@@ -1252,6 +1214,7 @@ int ClientMain::getClientID(IDatabase *db, const std::string &clientname, Server
 				q_insert_setting->Bind("group_id");
 				q_insert_setting->Bind(*client_group);
 				q_insert_setting->Bind(rid);
+				q_insert_setting->Bind(c_use_value);
 				q_insert_setting->Write();
 				q_insert_setting->Reset();
 
@@ -1368,13 +1331,14 @@ bool ClientMain::isUpdateIncrImage(const std::string &letter)
 }
 
 std::string ClientMain::sendClientMessageRetry(const std::string &msg, const std::string &errmsg, unsigned int timeout,
-	size_t retry, bool logerr, int max_loglevel, unsigned int timeout_after_first, bool do_encrypt)
+	size_t retry, bool logerr, int max_loglevel, unsigned int timeout_after_first, bool do_encrypt, const logid_t override_log_id)
 {
 	std::string res;
 	do
 	{
 		int64 starttime=Server->getTimeMS();
-		res = sendClientMessage(msg, errmsg, timeout, logerr, retry>0 ? LL_DEBUG : max_loglevel, NULL, do_encrypt);
+		res = sendClientMessage(msg, errmsg, timeout, logerr, retry>0 ? LL_DEBUG : max_loglevel, 
+			NULL, do_encrypt, 10000, override_log_id);
 
 		if(res.empty())
 		{
@@ -1404,11 +1368,13 @@ std::string ClientMain::sendClientMessageRetry(const std::string &msg, const std
 }
 
 std::string ClientMain::sendClientMessage(const std::string &msg, const std::string &errmsg,
-	unsigned int timeout, bool logerr, int max_loglevel, SConnection* conn, bool do_encrypt)
+	unsigned int timeout, bool logerr, int max_loglevel, SConnection* conn, bool do_encrypt,
+	const unsigned int connect_timeout, const logid_t override_log_id)
 {
+	const logid_t curr_logid = override_log_id != logid_t() ? override_log_id : logid;
 	CTCPStack tcpstack(internet_connection);
 
-	std::unique_ptr<IPipe> cc;
+	std::auto_ptr<IPipe> cc;
 	if (conn != NULL
 		&& conn->conn.get() != NULL
 		&& conn->internet_connection == internet_connection)
@@ -1417,11 +1383,11 @@ std::string ClientMain::sendClientMessage(const std::string &msg, const std::str
 	}
 	else
 	{
-		cc.reset(getClientCommandConnection(NULL, 10000, NULL, do_encrypt));
+		cc.reset(getClientCommandConnection(NULL, connect_timeout, NULL, do_encrypt));
 		if (cc.get() == NULL)
 		{
 			if (logerr)
-				ServerLogger::Log(logid, "Connecting to ClientService of \"" + clientname + "\" failed: " + errmsg, max_loglevel);
+				ServerLogger::Log(curr_logid, "Connecting to ClientService of \"" + clientname + "\" failed: " + errmsg, max_loglevel);
 			else
 				Server->Log("Connecting to ClientService of \"" + clientname + "\" failed: " + errmsg, max_loglevel);
 			return "";
@@ -1446,7 +1412,7 @@ std::string ClientMain::sendClientMessage(const std::string &msg, const std::str
 		if(rc==0)
 		{
 			if(logerr)
-				ServerLogger::Log(logid, errmsg, max_loglevel);
+				ServerLogger::Log(curr_logid, errmsg, max_loglevel);
 			else
 				Server->Log(errmsg, max_loglevel);
 
@@ -1467,7 +1433,7 @@ std::string ClientMain::sendClientMessage(const std::string &msg, const std::str
 	}
 
 	if(logerr)
-		ServerLogger::Log(logid, "Timeout: "+errmsg, max_loglevel);
+		ServerLogger::Log(curr_logid, "Timeout: "+errmsg, max_loglevel);
 	else
 		Server->Log("Timeout: "+errmsg, max_loglevel);
 
@@ -1475,13 +1441,14 @@ std::string ClientMain::sendClientMessage(const std::string &msg, const std::str
 }
 
 bool ClientMain::sendClientMessageRetry(const std::string &msg, const std::string &retok, const std::string &errmsg, unsigned int timeout, 
-	size_t retry, bool logerr, int max_loglevel, bool *retok_err, std::string* retok_str, bool do_encrypt)
+	size_t retry, bool logerr, int max_loglevel, bool *retok_err, std::string* retok_str, bool do_encrypt, const logid_t override_log_id)
 {
 	bool res;
 	do
 	{
 		int64 starttime=Server->getTimeMS();
-		res = sendClientMessage(msg, retok, errmsg, timeout, logerr, retry>0 ? LL_DEBUG : max_loglevel, retok_err, retok_str, NULL, do_encrypt);
+		res = sendClientMessage(msg, retok, errmsg, timeout, logerr, retry>0 ? LL_DEBUG : max_loglevel, 
+			retok_err, retok_str, NULL, do_encrypt, 10000, override_log_id);
 
 		if(!res)
 		{
@@ -1508,11 +1475,12 @@ bool ClientMain::sendClientMessageRetry(const std::string &msg, const std::strin
 
 bool ClientMain::sendClientMessage(const std::string &msg, const std::string &retok,
 	const std::string &errmsg, unsigned int timeout, bool logerr, int max_loglevel, bool *retok_err,
-	std::string* retok_str, SConnection* conn, bool do_encrypt)
+	std::string* retok_str, SConnection* conn, bool do_encrypt, const unsigned int connect_timeout, const logid_t override_log_id)
 {
+	const logid_t curr_logid = override_log_id != logid_t() ? override_log_id : logid;
 	CTCPStack tcpstack(internet_connection);
 
-	std::unique_ptr<IPipe> cc;
+	std::auto_ptr<IPipe> cc;
 	if (conn != NULL
 		&& conn->conn.get() != NULL
 		&& conn->internet_connection == internet_connection)
@@ -1521,11 +1489,11 @@ bool ClientMain::sendClientMessage(const std::string &msg, const std::string &re
 	}
 	else
 	{
-		cc.reset(getClientCommandConnection(NULL, 10000, NULL, do_encrypt));
+		cc.reset(getClientCommandConnection(NULL, connect_timeout, NULL, do_encrypt));
 		if (cc.get() == NULL)
 		{
 			if (logerr)
-				ServerLogger::Log(logid, "Connecting to ClientService of \"" + clientname + "\" failed: " + errmsg, max_loglevel);
+				ServerLogger::Log(curr_logid, "Connecting to ClientService of \"" + clientname + "\" failed: " + errmsg, max_loglevel);
 			else
 				Server->Log("Connecting to ClientService of \"" + clientname + "\" failed: " + errmsg, max_loglevel);
 
@@ -1571,7 +1539,7 @@ bool ClientMain::sendClientMessage(const std::string &msg, const std::string &re
 			{
 				herr=true;
 				if (logerr)
-					ServerLogger::Log(logid, errmsg, max_loglevel);
+					ServerLogger::Log(curr_logid, errmsg, max_loglevel);
 				else
 					Server->Log(errmsg, max_loglevel);
 
@@ -1596,7 +1564,7 @@ bool ClientMain::sendClientMessage(const std::string &msg, const std::string &re
 		std::string reason = (broken ? "Connection broken: " : "Timeout: ");
 
 		if(logerr)
-			ServerLogger::Log(logid, reason+errmsg, max_loglevel);
+			ServerLogger::Log(curr_logid, reason+errmsg, max_loglevel);
 		else
 			Server->Log(reason +errmsg, max_loglevel);
 	}
@@ -1618,7 +1586,7 @@ void ClientMain::sendClientBackupIncrIntervall(void)
 	{
 		incr_freq = (std::min)(incr_freq, static_cast<int>(server_settings->getUpdateFreqFileIncr()*settings->backup_ok_mod_file));
 	}
-	if(server_settings->getUpdateFreqImageIncr()>0)
+	if(!settings->no_images && server_settings->getUpdateFreqImageIncr()>0)
 	{
 		incr_freq = (std::min)(incr_freq, static_cast<int>(server_settings->getUpdateFreqImageIncr()*settings->backup_ok_mod_image));
 	}
@@ -1626,7 +1594,7 @@ void ClientMain::sendClientBackupIncrIntervall(void)
 	{
 		incr_freq = (std::min)(incr_freq, static_cast<int>(server_settings->getUpdateFreqFileFull()*settings->backup_ok_mod_file));
 	}
-	if(server_settings->getUpdateFreqImageFull()>0)
+	if(!settings->no_images && server_settings->getUpdateFreqImageFull()>0)
 	{
 		incr_freq = (std::min)(incr_freq, static_cast<int>(server_settings->getUpdateFreqImageFull()*settings->backup_ok_mod_image));
 	}
@@ -1666,6 +1634,10 @@ bool ClientMain::updateCapabilities(bool* needs_restart)
 			Server->Log("Client doesn't have IMAGE capability", LL_DEBUG);
 			new_capa |= CAPA_NO_IMAGE_BACKUPS;
 			can_backup_images=false;
+		}
+		else
+		{
+			can_backup_images = true;
 		}
 		str_map::iterator it=params.find("FILESRV");
 		if(it!=params.end())
@@ -1783,12 +1755,6 @@ bool ClientMain::updateCapabilities(bool* needs_restart)
 		{
 			connection_metered = true;
 		}
-		it = params.find("LOCKED");
-		if (it != params.end()
-			&& it->second == "1")
-		{
-			windows_locked = true;
-		}
 		it = params.find("PHASH");
 		if (it != params.end())
 		{
@@ -1898,7 +1864,7 @@ bool ClientMain::updateCapabilities(bool* needs_restart)
 			ServerBackupDao::CondString setting = backup_dao->getSetting(clientid, it->second);
 			if (!setting.exists)
 			{
-				backup_dao->insertSetting(it->second, val, clientid);
+				backup_dao->insertSetting(it->second, val, "", c_use_value, 0, clientid);
 				update_settings = true;
 			}
 			else if ( (it->second=="virtual_clients_add" || it->second =="image_snapshot_groups_def")
@@ -1936,22 +1902,24 @@ void ClientMain::sendSettings(void)
 		s_settings+="filebackup_group_offset="+convert(filebackup_group_offset)+"\n";
 	}
 
-	std::vector<std::string> settings_names=getSettingsList();
-	std::vector<std::string> global_settings_names=getGlobalizedSettingsList();
+	const std::vector<std::string> settings_names=getSettingsList();
+	const std::vector<std::string> global_settings_names=getGlobalizedSettingsList();
+	std::vector<std::string> merge_settings = getClientMergableSettingsList();
+	std::sort(merge_settings.begin(), merge_settings.end());
 
-	std::unique_ptr<ISettingsReader> settings_client, settings_default, settings_global;
+	std::auto_ptr<ISettingsReader> settings_client, settings_default, settings_global;
 	int settings_default_id;
 	server_settings->createSettingsReaders(db, clientid, settings_default, settings_client, settings_global, settings_default_id);
 
 	ISettingsReader* settings_global_ptr = settings_global.get() != NULL ? settings_global.get() : settings_default.get();
 
-	SSettings* settings = server_settings->getSettings();
+	const SSettings* settings = server_settings->getSettings();
 
-	bool allow_overwrite = settings->allow_overwrite;
+	std::map<std::string, ServerSettings::SClientSetting> client_default_settings = ServerSettings::getClientSettings(NULL, clientid, settings_default_id, db);
 
 	for (size_t i = 0; i < settings_names.size(); ++i)
 	{
-		std::string& key = settings_names[i];
+		const std::string& key = settings_names[i];
 		std::string value;
 
 		bool globalized = std::find(global_settings_names.begin(), global_settings_names.end(), key) != global_settings_names.end();
@@ -1967,20 +1935,11 @@ void ClientMain::sendSettings(void)
 		else
 		{
 			std::string value_default;
-			if (settings_default_id != 0)
+			std::map<std::string, ServerSettings::SClientSetting>::iterator it_client_default_setting = client_default_settings.find(key);
+			if (it_client_default_setting != client_default_settings.end() &&
+				it_client_default_setting->second.value_group.getType()!=JSON::null_type)
 			{
-				ServerBackupDao::SSetting setting_group = backup_dao->getServerSetting(key, 0);
-				if (setting_group.exists)
-				{
-					value_default = setting_group.value;
-				}
-			}
-
-			ServerBackupDao::SSetting setting_group = backup_dao->getServerSetting(key, settings_default_id);
-			if (setting_group.exists
-				&& (settings_default_id == 0 || setting_group.use == c_use_value))
-			{
-				value_default = setting_group.value;
+				value_default = it_client_default_setting->second.value_group.toString();
 			}
 
 			s_settings += key + ".group=" + value_default + "\n";
@@ -1990,6 +1949,7 @@ void ClientMain::sendSettings(void)
 			if (!setting.exists)
 			{
 				s_settings += key + "=" + value_default + "\n";
+				s_settings += key+".use=" + convert(c_use_group) + "\n";
 			}
 			else
 			{
@@ -2000,9 +1960,6 @@ void ClientMain::sendSettings(void)
 				}
 				else
 				{
-					if (key == "update_freq_incr")
-						int abct = 5;
-
 					s_settings += key + ".home=" + setting.value + "\n";
 					s_settings += key + ".client=" + setting.value_client + "\n";
 					s_settings += key + ".use=" + convert(setting.use) + "\n";
@@ -2010,20 +1967,53 @@ void ClientMain::sendSettings(void)
 				}
 				
 				if (setting.use == c_use_group)
+				{
 					value = value_default;
+				}
 				else if (setting.use == c_use_value)
+				{
 					value = setting.value;
+				}
 				else if (setting.use == c_use_value_client)
+				{
 					value = setting.value_client;
+				}
 				else
-					value = setting.value;
+				{
+					if (std::binary_search(merge_settings.begin(), merge_settings.end(), key))
+					{
+						const char sep_ch = key == "virtual_clients" ? '|' :
+								( (key=="vss_select_components" || key=="archive") ? '&' : ';');
+
+						if (setting.use & c_use_group)
+							value = value_default;
+
+						if (setting.use & c_use_value &&
+							!setting.value.empty())
+						{
+							if (!value.empty())
+								value += sep_ch;
+							value += setting.value;
+						}
+
+						if (setting.use & c_use_value_client &&
+							!setting.value_client.empty())
+						{
+							if (!value.empty())
+								value += sep_ch;
+							value += setting.value_client;
+						}
+					}
+					else
+					{
+						value = setting.value;
+					}
+				}
 				
 				s_settings += key + "=" + value + "\n";
 			}
 		}
 	}
-	s_settings += "server_token=" + server_token + "\n";
-	s_settings += "perm_uid=" + bytesToHex(perm_uid) + "\n";
 	escapeClientMessage(s_settings);
 	if(!sendClientMessage("SETTINGS "+s_settings, "OK", "Sending settings to client failed", 10000))
 	{
@@ -2078,15 +2068,15 @@ bool ClientMain::getClientSettings(bool& doesnt_exist)
 	ScopedDeleteFn delete_fn(tmp_fn);
 	Server->destroy(tmp);
 
-	std::unique_ptr<ISettingsReader> sr(Server->createFileSettingsReader(tmp_fn));
+	std::auto_ptr<ISettingsReader> sr(Server->createFileSettingsReader(tmp_fn));
 
-	std::vector<std::string> setting_names=getSettingsList();
+	std::vector<std::string> setting_names=getClientConfigurableSettingsList();
+	std::vector<std::string> merge_settings = getClientMergableSettingsList();
 
 	bool mod=false;
-
-	std::vector<std::string> only_server_settings = getOnlyServerClientSettingsList();
-
 	bool has_use = false;
+
+	bool allow_overwrite = server_settings->getSettings()->allow_overwrite;
 
 	for (size_t i = 0; i < setting_names.size(); ++i)
 	{
@@ -2097,19 +2087,27 @@ bool ClientMain::getClientSettings(bool& doesnt_exist)
 			break;
 		}
 	}
+
+	int def_use = c_use_group;
+
+	if (sr->getValue("client_set_settings") == "true")
+	{
+		def_use = c_use_value_client;
+	}
 	
 	for(size_t i=0;i<setting_names.size();++i)
 	{
-		std::string &key=setting_names[i];
+		const std::string& key=setting_names[i];
 		std::string value;
 
-		if(std::find(only_server_settings.begin(), only_server_settings.end(),
-			key)!=only_server_settings.end())
-		{
-			continue;
-		}
-
 		int use = c_use_value;
+
+		bool curr_allow_overwrite = allow_overwrite;
+
+		if (key == "default_dirs")
+			curr_allow_overwrite = server_settings->getSettings()->allow_config_paths;
+		else if (key == "vss_select_components")
+			curr_allow_overwrite = server_settings->getSettings()->allow_component_config;
 
 		if (sr->getValue(key + ".use", &value))
 		{
@@ -2119,28 +2117,42 @@ bool ClientMain::getClientSettings(bool& doesnt_exist)
 			if (sr->getValue(key + ".use_lm", &use_lm_str))
 				use_lm = watoi64(use_lm_str);
 
-			if ( (use & c_use_value_client)>0
-				&& sr->getValue(key + ".client", &value))
+			if (use == 0)
+				use = c_use_group;
+
+			use &= c_use_group | c_use_value | c_use_value_client;
+
+			if (std::find(merge_settings.begin(), merge_settings.end(), key) == merge_settings.end())
+			{
+				if (use & c_use_value_client)
+					use = c_use_value_client;
+				else if (use & c_use_value)
+					use = c_use_value;
+				else
+					use = c_use_group;
+			}
+
+			if ( sr->getValue(key + ".client", &value))
 			{
 				if (internet_connection && key == "computername")
 				{
 					continue;
 				}
 
-				bool b = updateClientSetting(key, value, use, use_lm);
+				bool b = updateClientSetting(key, value, use, use_lm, curr_allow_overwrite);
 				if (b)
 					mod = true;
 			}
 		}
 		else if (!has_use
-			&& sr->getValue(key, &value))
+			&& sr->getValue(key, &value) )
 		{
 			if (internet_connection && key == "computername")
 			{
 				continue;
 			}
 
-			bool b = updateClientSetting(key, value, c_use_undefined, 0);
+			bool b = updateClientSetting(key, value, def_use, 0, curr_allow_overwrite);
 			if (b)
 				mod = true;
 		}
@@ -2154,11 +2166,8 @@ bool ClientMain::getClientSettings(bool& doesnt_exist)
 	return true;
 }
 
-bool ClientMain::updateClientSetting(const std::string &key, const std::string &value, int use, int64 use_last_modified)
+bool ClientMain::updateClientSetting(const std::string &key, const std::string &value, int use, int64 use_last_modified, bool allow_use_mod)
 {
-	if (key == "update_freq_incr")
-		int abct = 45;
-
 	q_get_setting->Bind(clientid);
 	q_get_setting->Bind(key);
 	db_results res = q_get_setting->Read();
@@ -2171,7 +2180,8 @@ bool ClientMain::updateClientSetting(const std::string &key, const std::string &
 		int64 old_use_last_mod = watoi64(res[0]["use_last_modified"]);
 		int old_use = watoi(res[0]["use"]);
 
-		if (old_use_last_mod > use_last_modified)
+		if (old_use_last_mod > use_last_modified ||
+			!allow_use_mod)
 		{
 			use = old_use;
 			use_last_modified = old_use_last_mod;
@@ -2187,11 +2197,16 @@ bool ClientMain::updateClientSetting(const std::string &key, const std::string &
 			use = old_use;
 		}
 	}
-
+	else if (!allow_use_mod)
+	{
+		use = c_use_group;
+		use_last_modified = 0;
+	}
 
 	if(res.empty())
 	{
 		q_insert_setting->Bind(key);
+		q_insert_setting->Bind(value);
 		q_insert_setting->Bind(value);
 		q_insert_setting->Bind(clientid);
 		q_insert_setting->Bind(use);
@@ -2333,13 +2348,13 @@ void ClientMain::checkClientVersion(void)
 			}
 
 
-			std::unique_ptr<IFile> sigfile(Server->openFile(signature_file, MODE_READ));
+			std::auto_ptr<IFile> sigfile(Server->openFile(signature_file, MODE_READ));
 			if(sigfile.get()==NULL)
 			{
 				ServerLogger::Log(logid, "Error opening sigfile", LL_ERROR);
 				return;
 			}
-			std::unique_ptr<IFile> updatefile(Server->openFile(installer_file, MODE_READ));
+			std::auto_ptr<IFile> updatefile(Server->openFile(installer_file, MODE_READ));
 			if(updatefile.get()==NULL)
 			{
 				ServerLogger::Log(logid, "Error opening updatefile", LL_ERROR);
@@ -2348,7 +2363,7 @@ void ClientMain::checkClientVersion(void)
 			size_t datasize=3*sizeof(_u32)+version.size()+(size_t)sigfile->Size()+(size_t)updatefile->Size();
 
 			CTCPStack tcpstack(internet_connection);
-			std::unique_ptr<IPipe> cc(getClientCommandConnection(server_settings.get(), 10000));
+			std::auto_ptr<IPipe> cc(getClientCommandConnection(server_settings.get(), 10000));
 			if(cc.get()==NULL)
 			{
 				ServerLogger::Log(logid, "Connecting to ClientService of \""+clientname+"\" failed - CONNECT error", LL_ERROR);
@@ -2573,11 +2588,11 @@ IPipeThrottler *ClientMain::getThrottler(int speed_bps)
 void ClientMain::updateClientAccessKey()
 {
 	std::string access_key = ServerSettings::generateRandomAuthKey(32);
-	backup_dao->updateOrInsertSetting(clientid, "client_access_key", access_key);
+	backup_dao->updateOrInsertSetting(clientid, "client_access_key", access_key, "", c_use_value, 0);
 	ServerSettings::updateClient(clientid);
 
 	sendClientMessageRetry("CLIENT ACCESS KEY key=" + access_key + "&token=" + server_token, "OK",
-		"Error sending client access key to client \"" + clientname + "\"", 10000, 10, false);
+		"Error sending client access key", 10000, 10, false);
 }
 
 bool ClientMain::isDataplanOkay(bool file)
@@ -2664,6 +2679,10 @@ std::string ClientMain::getClientIpStr(const std::string & clientname)
 		addr_hint.is_ipv6 = false;
 		memcpy(&addr_hint.addr_ipv4, ip_addr_binary.data(), ip_addr_binary.size());
 	}
+	else if(ip_addr_binary.empty())
+	{
+		return std::string();
+	}
 	else
 	{
 		assert(false);
@@ -2675,11 +2694,6 @@ std::string ClientMain::getClientIpStr(const std::string & clientname)
 void ClientMain::setConnectionMetered(bool b)
 {
 	connection_metered = b;
-}
-
-void ClientMain::setWindowsLocked(bool b)
-{
-	windows_locked = b;
 }
 
 void ClientMain::forceReauthenticate()
@@ -2713,7 +2727,8 @@ bool ClientMain::inBackupWindow(Backup * backup)
 	}
 }
 
-IPipe *ClientMain::getClientCommandConnection(ServerSettings* server_settings, int timeoutms, std::string* clientaddr, bool do_encrypt)
+IPipe *ClientMain::getClientCommandConnection(ServerSettings* server_settings, int timeoutms,
+	std::string* clientaddr, bool do_encrypt, bool allow_reauth, bool* require_reauth)
 {
 	std::string curr_clientname = (clientname);
 	if(!clientsubname.empty())
@@ -2777,8 +2792,10 @@ IPipe *ClientMain::getClientCommandConnection(ServerSettings* server_settings, i
 			std::string server_keyadd;
 			if (!secret_session_key.empty())
 			{
-				server_keyadd.resize(16);
-				Server->randomFill(&server_keyadd[0], server_keyadd.size());
+				server_keyadd.resize(16 + sizeof(int64));
+				Server->randomFill(&server_keyadd[0], server_keyadd.size()- sizeof(int64));
+				int64 ctime = Server->getTimeSeconds();
+				memcpy(&server_keyadd[16], &ctime, sizeof(int64));
 			}
 			std::string tosend = identity + "ENC?keyadd="+ base64_encode_dash(server_keyadd)+"&compress="+EscapeParamString(compression)+"&compress_level="+convert(compression_level);
 			size_t rc = tcpstack.Send(ret, tosend);
@@ -2805,6 +2822,21 @@ IPipe *ClientMain::getClientCommandConnection(ServerSettings* server_settings, i
 
 				if (tcpstack.getPacket(msg))
 				{					
+					if (msg == "ERR" || msg == "ERR REQUIRE ENC")
+					{
+						if (require_reauth != NULL)
+							*require_reauth = true;
+
+						if (allow_reauth)
+						{
+							if (authenticateIfNeeded(false, true))
+							{
+								Server->destroy(ret);
+								return getClientCommandConnection(server_settings, timeoutms, clientaddr, do_encrypt, false);
+							}
+						}
+					}
+
 					ParseParamStrHttp(msg, &enc_response);
 					break;
 				}
@@ -2839,7 +2871,7 @@ IPipe *ClientMain::getClientCommandConnection(ServerSettings* server_settings, i
 #ifndef NO_ZSTD_COMPRESSION
 			else if (compression == "zstd")
 			{
-				CompressedPipeZstd* comp = new CompressedPipeZstd(ret, compression_level, -1);
+				CompressedPipeZstd* comp = new CompressedPipeZstd(ret, compression_level);
 				comp->destroyBackendPipeOnDelete(true);
 				ret = comp;
 			}
@@ -2896,7 +2928,7 @@ _u32 ClientMain::getClientFilesrvConnection(FileClient *fc, ServerSettings* serv
 		_u32 ret;
 		if (protocol_versions.filesrvtunnel > 0)
 		{
-			IPipe* pipe = new_fileclient_connection();
+			IPipe* pipe = new_fileclient_connection(server_settings);
 			if (pipe == NULL)
 				return ERR_ERROR;
 
@@ -2928,7 +2960,7 @@ _u32 ClientMain::getClientFilesrvConnection(FileClient *fc, ServerSettings* serv
 	}
 }
 
-bool ClientMain::getClientChunkedFilesrvConnection(std::unique_ptr<FileClientChunked>& fc_chunked, 
+bool ClientMain::getClientChunkedFilesrvConnection(std::auto_ptr<FileClientChunked>& fc_chunked, 
 	ServerSettings* server_settings, FileClientChunked::NoFreeSpaceCallback* no_free_space_callback, int timeoutms)
 {
 	if (no_free_space_callback == NULL)
@@ -2959,7 +2991,7 @@ bool ClientMain::getClientChunkedFilesrvConnection(std::unique_ptr<FileClientChu
 		IPipe* pipe;
 		if (protocol_versions.filesrvtunnel > 0)
 		{
-			pipe = new_fileclient_connection();
+			pipe = new_fileclient_connection(server_settings);
 			if (pipe == NULL)
 				return false;
 		}
@@ -3069,7 +3101,13 @@ void ClientMain::destroyTemporaryFile(IFile *tmp)
 	Server->deleteFile(fn);
 }
 
-IPipe * ClientMain::new_fileclient_connection(void)
+IPipe* ClientMain::new_fileclient_connection()
+{
+	ServerSettings server_settings(db, clientid);
+	return new_fileclient_connection(&server_settings);
+}
+
+IPipe * ClientMain::new_fileclient_connection(ServerSettings* server_settings)
 {
 	std::string curr_clientname = (clientname);
 	if(!clientsubname.empty())
@@ -3086,7 +3124,7 @@ IPipe * ClientMain::new_fileclient_connection(void)
 	{
 		if (protocol_versions.filesrvtunnel > 0)
 		{
-			rp = getClientCommandConnection(server_settings.get(), c_filesrv_connect_timeout);
+			rp = getClientCommandConnection(server_settings, c_filesrv_connect_timeout);
 			if (rp == NULL)
 			{
 				return NULL;
@@ -3111,7 +3149,7 @@ IPipe * ClientMain::new_fileclient_connection(void)
 	return rp;
 }
 
-bool ClientMain::handle_not_enough_space(const std::string &path, logid_t logid)
+bool ClientMain::handle_not_enough_space(const std::string &path, logid_t logid, ServerSettings& server_settings)
 {
 	int64 free_space=-1;
 	if(!path.empty())
@@ -3124,7 +3162,7 @@ bool ClientMain::handle_not_enough_space(const std::string &path, logid_t logid)
 	}
 	if(free_space==-1)
 	{
-		free_space=os_free_space(os_file_prefix(server_settings->getSettings()->backupfolder));
+		free_space=os_free_space(os_file_prefix(server_settings.getSettings()->backupfolder));
 	}
 	if(free_space!=-1 && free_space<minfreespace_min)
 	{
@@ -3143,7 +3181,13 @@ bool ClientMain::handle_not_enough_space(const std::string &path, logid_t logid)
 
 bool ClientMain::handle_not_enough_space(const std::string & path)
 {
-	return handle_not_enough_space(path, logid);
+	IDatabase* db = Server->getDatabase(Server->getThreadID(), URBACKUPDB_SERVER);
+
+	if (db == this->db)
+		return handle_not_enough_space(path, logid, *server_settings.get());
+
+	ServerSettings server_settings(db, clientid);
+	return handle_not_enough_space(path, logid, server_settings);
 }
 
 unsigned int ClientMain::exponentialBackoffTime( size_t count, unsigned int sleeptime, unsigned div )
@@ -3328,7 +3372,7 @@ bool ClientMain::authenticatePubKeyInt(IECDHKeyExchange* ecdh_key_exchange)
 
 	if (!clientsubname.empty())
 	{
-		params = "&clientsubname=" + EscapeParamString(clientsubname);
+		params += "&clientsubname=" + EscapeParamString(clientsubname);
 		params[0] = ' ';
 	}
 
@@ -3456,7 +3500,7 @@ bool ClientMain::authenticatePubKeyInt(IECDHKeyExchange* ecdh_key_exchange)
 			"&signature_ecdsa409k1="+base64_encode_dash(signature_ecdsa409k1)+
 			"&session_identity="+identity +
 			session_key +
-			(clientsubname.empty() ? "" : "&clientsubname="+ EscapeParamString(clientsubname)), "ok", "Error sending server signature to client \"" + clientname + "\"",
+			(clientsubname.empty() ? "" : "&clientsubname="+ EscapeParamString(clientsubname)), "ok", "Error sending server signature to client",
 			10000, 10, true, LL_ERROR, NULL, NULL, false);
 
 		if(ret)
@@ -3490,50 +3534,6 @@ void ClientMain::timeoutRestores()
 			finishFailedRestore(running_restores[i].restore_identity, running_restores[i].log_id, running_restores[i].status_id, running_restores[i].restore_id);
 
 			running_restores.erase(running_restores.begin() + i);
-		}
-		else
-		{
-			++i;
-		}
-	}
-}
-
-void ClientMain::timeoutLocalBackups()
-{
-	std::lock_guard<std::mutex> lock(local_backup_mutex);
-
-	for (size_t i = 0; i < running_local_backups.size();)
-	{
-		if (Server->getTimeMS() - running_local_backups[i].last_active > 5 * 60 * 1000) //5min
-		{
-			LocalBackup* lb = nullptr;
-			for (SRunningBackup& rb : backup_queue)
-			{
-				if (rb.backup->getStatusId() == running_local_backups[i].status_id)
-					lb = dynamic_cast<LocalBackup*>(rb.backup);
-				if (lb != nullptr)
-					break;
-			}
-
-			bool finished;
-			if (!lb->queryBackupFinished(60000, finished))
-			{
-				ServerLogger::Log(running_local_backups[i].log_id, "Local backup was inactive for 5min. Timeout. Stopping local backup...", LL_ERROR);
-
-				finishLocalBackup(false, running_local_backups[i].log_id, running_local_backups[i].status_id, running_local_backups[i].backupid);
-
-				running_local_backups.erase(running_local_backups.begin() + i);
-			}
-			else
-			{
-				running_local_backups[i].last_active = Server->getTimeMS();
-
-				if (finished)
-				{
-					finishLocalBackup(lb->getResult(), running_local_backups[i].log_id, running_local_backups[i].status_id,
-						running_local_backups[i].backupid);
-				}
-			}
 		}
 		else
 		{
@@ -3739,7 +3739,7 @@ bool ClientMain::isImageGroupQueued(const std::string & letter, bool full)
 	std::vector<std::string> groups;
 	Tokenize(image_snapshot_groups, groups, "|");
 
-	image_snapshot_groups = strlower(image_snapshot_groups);
+	image_snapshot_groups = strlower(trim(image_snapshot_groups));
 
 	std::string vol = normalizeVolumeUpper(letter);
 
@@ -3849,19 +3849,7 @@ void ClientMain::cleanupRestoreShare(int clientid, std::string restore_identity)
 	}
 }
 
-void ClientMain::updateLocalBackup(int64 status_id, bool success, bool should_backoff)
-{
-	for (SRunningBackup& rb : backup_queue)
-	{
-		if (rb.backup->getStatusId() == status_id)
-		{
-			rb.backup->setResult(success, should_backoff);
-			return;
-		}
-	}
-}
-
-bool ClientMain::removeRestore(int64 restore_id)
+bool ClientMain::finishRestore(int64 restore_id)
 {
 	IScopedLock lock(restore_mutex.get());
 
@@ -3870,22 +3858,6 @@ bool ClientMain::removeRestore(int64 restore_id)
 		if (running_restores[i].restore_id == restore_id)
 		{
 			running_restores.erase(running_restores.begin() + i);
-			return true;
-		}
-	}
-
-	return false;
-}
-
-bool ClientMain::removeLocalBackup(int64 status_id)
-{
-	std::lock_guard<std::mutex> lock(local_backup_mutex);
-
-	for (size_t i = 0; i < running_local_backups.size(); ++i)
-	{
-		if (running_local_backups[i].status_id == status_id)
-		{
-			running_local_backups.erase(running_local_backups.begin() + i);
 			return true;
 		}
 	}
@@ -3902,22 +3874,6 @@ bool ClientMain::updateRestoreRunning(int64 restore_id)
 		if (running_restores[i].restore_id == restore_id)
 		{
 			running_restores[i].last_active = Server->getTimeMS();
-			return true;
-		}
-	}
-
-	return false;
-}
-
-bool ClientMain::updateLocalBackupRunning(int backupid)
-{
-	std::lock_guard<std::mutex> lock(local_backup_mutex);
-
-	for (size_t i = 0; i < running_local_backups.size(); ++i)
-	{
-		if (running_local_backups[i].backupid == backupid)
-		{
-			running_local_backups[i].last_active = Server->getTimeMS();
 			return true;
 		}
 	}
@@ -3997,81 +3953,12 @@ void ClientMain::finishFailedRestore(std::string restore_identity, logid_t log_i
 			++i;
 		}
 	}
-
-	ServerLogger::reset(log_id);
-}
-
-void ClientMain::finishLocalBackup(bool success, logid_t log_id, int64 status_id, int backupid)
-{
-	SProcess proc = ServerStatus::getProcess(clientname, status_id);
-
-	if (proc.id == 0)
-		return;
-
-	ServerStatus::stopProcess(clientname, status_id);
-
-	int errors = 0;
-	int warnings = 0;
-	int infos = 0;
-	std::string logdata = ServerLogger::getLogdata(log_id, errors, warnings, infos);
-
-	int num_issues = 0;
-	bool image = proc.action == sa_full_image || proc.action == sa_incr_image;
-	bool incr = proc.action == sa_incr_image || proc.action == sa_incr_file || proc.action == sa_resume_incr_file;
-	bool resumed = proc.action == sa_resume_incr_file || proc.action == sa_resume_full_file;
-
-	backup_dao->saveBackupLog(clientid, errors, warnings, infos, image,
-		incr, resumed, 0);
-
-	backup_dao->saveBackupLogData(db->getLastInsertID(), logdata);
-
-	if (!success)
-	{
-		ServerCleanupDao cleanupdao(db);
-		cleanupdao.removeFileBackup(backupid);
-	}
-	else
-	{
-		ServerBackupDao backup_dao(db);
-		backup_dao.updateClientLastFileBackup(backupid, num_issues, clientid);
-		backup_dao.updateFileBackupSetComplete(backupid);
-	}
-
-	ServerLogger::reset(log_id);
-}
-
-bool ClientMain::isLocalBackupRunning(int64 status_id)
-{
-	std::lock_guard<std::mutex> lock(local_backup_mutex);
-
-	for (size_t i = 0; i < running_local_backups.size();)
-	{
-		if (running_local_backups[i].status_id == status_id)
-			return true;
-	}
-
-	return false;
-}
-
-bool ClientMain::isBackupFinished(const SRunningBackup& rb)
-{
-	if (rb.running)
-	{
-		LocalBackup* lb = dynamic_cast<LocalBackup*>(rb.backup);
-		if (lb != nullptr)
-			return !isLocalBackupRunning(lb->getStatusId());
-	}
-	else if (rb.ticket != ILLEGAL_THREADPOOL_TICKET)
-	{
-		return Server->getThreadPool()->waitFor(rb.ticket, 0);
-	}
-
-	return false;
 }
 
 void ClientMain::updateVirtualClients()
 {
 	std::string virtual_clients = server_settings->getVirtualClients();
+	if(!server_settings->getSettings()->allow_all_clients_restore)
 	{
 		IScopedLock lock(clientaddr_mutex);
 
@@ -4086,6 +3973,11 @@ void ClientMain::updateVirtualClients()
 				allow_restore_clients.push_back(clientname + "[" + toks[i] + "]");
 			}
 		}
+	}
+	else
+	{
+		IScopedLock lock(clientaddr_mutex);
+		allow_restore_clients.clear();
 	}
 
 	BackupServer::setVirtualClients(clientname, virtual_clients);
@@ -4125,8 +4017,34 @@ bool ClientMain::checkClientName(bool& continue_start_backups)
 	}
 }
 
+void ClientMain::startStartup()
+{
+	if (clientsubname.empty())
+		return;
+
+	IScopedLock lock(client_startup_mutex);
+	while (client_startup.find(clientmainname) != client_startup.end())
+	{
+		client_startup_cond->wait(&lock);
+	}
+	client_startup.insert(clientmainname);
+}
+
+void ClientMain::finishStartup()
+{
+	if (clientsubname.empty())
+		return;
+
+	IScopedLock lock(client_startup_mutex);
+	client_startup.erase(clientmainname);
+	client_startup_cond->notify_one();
+}
+
 bool ClientMain::renameClient(const std::string & clientuid)
 {
+	if(!server_settings->getSettings()->client_rename_detection)
+		return false;
+
 	std::vector<int> uids = backup_dao->getClientsByUid(clientuid);
 
 	if (std::find(uids.begin(), uids.end(), clientid)
@@ -4176,7 +4094,8 @@ bool ClientMain::renameClient(const std::string & clientuid)
 
 	if (ServerStatus::getStatus(old_name.name).r_online)
 	{
-		//retry later once the old client is offline
+		ServerLogger::Log(logid, "Detected old client name at \"" + old_name.name + "\" is still online. "
+			"Cannot rename client \"" + clientname + "\". Retrying rename later once old client is offline...", LL_INFO);
 		return true;
 	}
 
@@ -4191,20 +4110,25 @@ bool ClientMain::renameClient(const std::string & clientuid)
 	{
 		if (!ImageMount::unmount_images(images[i].id))
 		{
-			//retry later
+			ServerLogger::Log(logid, "Failed to unmount image with ID " + std::to_string(images[i].id) + " during client rename"
+				" of " + old_name.name + " to " + clientname + ". Retrying later...", LL_INFO);
 			return true;
 		}
 	}
 
 	if (!os_remove_dir(backupfolder + os_file_sep() + clientname))
 	{
+		ServerLogger::Log(logid, "Failed to remove directory for new client name \"" + clientname + "\" during"
+			" rename of " + old_name.name + " to " + clientname + ": "+ os_last_error_str()+". Giving up on renaming.", LL_INFO);
 		return true;
 	}
 
 	if (!os_rename_file(backupfolder + os_file_sep() + old_name.name,
 		backupfolder + os_file_sep() + clientname))
 	{
-		os_create_dir(backupfolder + os_file_sep() + clientname);
+		ServerLogger::Log(logid, "Failed to rename backup directory from \"" + old_name.name + "\" to \"" + clientname + "\" during"
+			" rename of " + old_name.name + " to " + clientname + ": "+ os_last_error_str()+". Giving up on renaming.", LL_INFO);
+		os_create_dir(backupfolder + os_file_sep() + clientname);		
 		return true;
 	}
 
@@ -4252,6 +4176,8 @@ bool ClientMain::renameClient(const std::string & clientuid)
 	{
 		backup_dao->changeClientNameWithVirtualmain(clientname, clientmainname, rename_from);
 	}
+
+	ServerLogger::Log(logid, "Renamed client \"" + old_name.name + "\" to \"" + clientname + "\"", LL_INFO);
 
 	clientid = rename_from;
 
@@ -4456,4 +4382,48 @@ bool ClientMain::authenticateIfNeeded(bool retry_exit, bool force)
 	while(c);
 
 	return true;
+}
+
+int ClientMain::numRunningClientGroupJobs(const int group_id)
+{
+	IScopedLock lock(client_group_job_mutex);
+
+	std::map<int, int>::iterator it = client_group_jobs.find(group_id);
+	if (it != client_group_jobs.end())
+	{
+		return it->second;
+	}
+	return 0;
+}
+
+void ClientMain::addRunningClientGroupJob(const int group_id)
+{
+	assert(group_id >= 0);
+	IScopedLock lock(client_group_job_mutex);
+
+	std::map<int, int>::iterator it = client_group_jobs.find(group_id);
+	if (it != client_group_jobs.end())
+	{
+		it->second++;
+	}
+	else if(group_id>=0)
+	{
+		client_group_jobs[group_id] = 1;
+	}
+}
+
+void ClientMain::subRunningClientGroupJob(const int group_id)
+{
+	assert(group_id >= 0);
+	IScopedLock lock(client_group_job_mutex);
+
+	std::map<int, int>::iterator it = client_group_jobs.find(group_id);
+	if (it != client_group_jobs.end())
+	{
+		it->second--;
+		if (it->second == 0)
+		{
+			client_group_jobs.erase(it);
+		}
+	}
 }

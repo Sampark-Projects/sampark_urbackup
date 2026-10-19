@@ -65,7 +65,6 @@ struct SBackupDir
 	bool symlinked_confirmed;
 	EBackupDirServerDefault server_default;
 	bool reset_keep;
-	int facet;
 };
 
 struct SShadowCopy
@@ -183,13 +182,6 @@ public:
 		bool exists;
 		int64 value;
 	};
-	struct SClientFacet
-	{
-		bool exists;
-		int id;
-		std::string name;
-		std::string server_identity;
-	};
 	struct SToken
 	{
 		int64 id;
@@ -207,17 +199,13 @@ public:
 	void removeGroupMembership(int64 uid);
 	void updateGroupMembership(int64 uid, const std::string& accountname);
 	std::vector<int> getGroupMembership(int uid);
-	void addBackupDir(const std::string& name, const std::string& path, int server_default, int flags, int tgroup, int symlinked, int facet);
+	void addBackupDir(const std::string& name, const std::string& path, int server_default, int flags, int tgroup, int symlinked);
 	void delBackupDir(int64 id);
 	void setResetKeep(int val, int64 id);
 	void resetHardlink(const std::string& vol, int64 frn_high, int64 frn_low);
 	CondInt64 hasHardLink(const std::string& vol, int64 frn_high, int64 frn_low);
 	void addHardlink(const std::string& vol, int64 frn_high, int64 frn_low, int64 parent_frn_high, int64 parent_frn_low);
 	void resetAllHardlinks(void);
-	SClientFacet getClientFacet(const std::string& server_identity);
-	SClientFacet getClientFacetByName(const std::string& name);
-	void addClientFacet(const std::string& name, const std::string& server_identity);
-	void updateClientFacet(const std::string& server_identity, int id);
 	//@-SQLGenFunctionsEnd
 
 	static std::string escapeGlob(const std::string& input);
@@ -267,10 +255,6 @@ private:
 	IQuery* q_hasHardLink;
 	IQuery* q_addHardlink;
 	IQuery* q_resetAllHardlinks;
-	IQuery* q_getClientFacet;
-	IQuery* q_getClientFacetByName;
-	IQuery* q_addClientFacet;
-	IQuery* q_updateClientFacet;
 	//@-SQLGenVariablesEnd
 
 	bool with_files_tmp;

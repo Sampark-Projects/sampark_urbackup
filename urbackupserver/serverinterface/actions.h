@@ -4,6 +4,7 @@ namespace Actions
 {
 	ACTION(progress);
 	ACTION(login);
+	ACTION(oidc_login);
 	ACTION(salt);
 	ACTION(lastacts);
 	ACTION(piegraph);

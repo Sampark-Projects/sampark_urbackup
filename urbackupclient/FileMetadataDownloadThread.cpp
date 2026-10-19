@@ -40,6 +40,7 @@
 #define llistxattr(path, list, size) listxattr(path, list, size, XATTR_NOFOLLOW)
 #define lremovexattr(path, name) removexattr(path, name, XATTR_NOFOLLOW)
 #define lsetxattr(path, name, value, size, flags) setxattr(path, name, value, size, 0, XATTR_NOFOLLOW|flags)
+#define stat64 stat
 #elif __FreeBSD__
 #define O_SYMLINK 0
 #define stat64 stat
@@ -109,9 +110,9 @@ FileMetadataDownloadThread::FileMetadataDownloadThread(RestoreFiles& restore, Fi
 
 void FileMetadataDownloadThread::operator()()
 {
-	std::unique_ptr<IFsFile> tmp_f(Server->openTemporaryFile());
+	std::auto_ptr<IFsFile> tmp_f(Server->openTemporaryFile());
 
-	if(tmp_f.get()==nullptr)
+	if(tmp_f.get()==NULL)
 	{
 		restore.log("Error creating temporary file for metadata", LL_ERROR);
 	}
@@ -141,9 +142,9 @@ void FileMetadataDownloadThread::operator()()
 bool FileMetadataDownloadThread::applyMetadata(const str_map& path_mapping)
 {
 	buffer.resize(32768);
-	std::unique_ptr<IFile> metadata_f(Server->openFile(metadata_tmp_fn, MODE_READ_SEQUENTIAL));
+	std::auto_ptr<IFile> metadata_f(Server->openFile(metadata_tmp_fn, MODE_READ_SEQUENTIAL));
 
-	if(metadata_f.get()==nullptr)
+	if(metadata_f.get()==NULL)
 	{
 		restore.log("Error opening metadata file at \""+ metadata_tmp_fn+"\". Cannot save file metadata. "+os_last_error_str(), LL_ERROR);
 		return false;
@@ -173,7 +174,7 @@ bool FileMetadataDownloadThread::applyMetadata(const str_map& path_mapping)
 				return false;
 			}
 
-			unsigned int path_checksum = urb_adler32(urb_adler32(0, nullptr, 0), reinterpret_cast<char*>(&curr_fn_size), sizeof(curr_fn_size));
+			unsigned int path_checksum = urb_adler32(urb_adler32(0, NULL, 0), reinterpret_cast<char*>(&curr_fn_size), sizeof(curr_fn_size));
 
 			std::string curr_fn;
 
@@ -374,7 +375,7 @@ bool FileMetadataDownloadThread::applyOsMetadata( IFile* metadata_f, const std::
 		&& (os_get_file_type(os_file_prefix(output_fn)) & EFileType_Directory) )
 	{
 		os_remove_dir(os_file_prefix(output_fn));
-		std::unique_ptr<IFile> touch_file(Server->openFile(os_file_prefix(output_fn), MODE_WRITE));
+		std::auto_ptr<IFile> touch_file(Server->openFile(os_file_prefix(output_fn), MODE_WRITE));
 	}
 
 	HANDLE hFile = CreateFileW(Server->ConvertToWchar(os_file_prefix(output_fn)).c_str(), GENERIC_WRITE | ACCESS_SYSTEM_SECURITY | WRITE_OWNER | WRITE_DAC, FILE_SHARE_READ, NULL,
@@ -767,7 +768,7 @@ namespace
         while(true)
         {
             ssize_t bufsize;
-            bufsize = llistxattr(fn.c_str(), nullptr, 0);
+            bufsize = llistxattr(fn.c_str(), NULL, 0);
 
             if(bufsize==-1)
             {
@@ -839,7 +840,7 @@ namespace
 bool FileMetadataDownloadThread::applyOsMetadata( IFile* metadata_f, const std::string& output_fn)
 {
     int64 unix_magic_and_size[2];
-	unsigned int data_checksum = urb_adler32(0, nullptr, 0);
+	unsigned int data_checksum = urb_adler32(0, NULL, 0);
 
     if(metadata_f->Read(reinterpret_cast<char*>(unix_magic_and_size), sizeof(unix_magic_and_size))!=sizeof(unix_magic_and_size))
     {

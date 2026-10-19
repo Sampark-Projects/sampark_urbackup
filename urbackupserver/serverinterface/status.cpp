@@ -90,7 +90,7 @@ std::string get_stop_show_version(IDatabase *db)
 
 void set_server_version_info(IDatabase* db, JSON::Object& ret)
 {
-	std::unique_ptr<ISettingsReader> infoProperties(Server->createFileSettingsReader("urbackup/server_version_info.properties"));
+	std::auto_ptr<ISettingsReader> infoProperties(Server->createFileSettingsReader("urbackup/server_version_info.properties"));
 
 	if(infoProperties.get())
 	{
@@ -189,6 +189,9 @@ bool is_stop_show(IDatabase* db, std::string stop_key)
 
 std::string ipAddrToStr(const std::string& ip_addr_binary)
 {
+	if (ip_addr_binary.empty())
+		return std::string();
+
 	FileClient::SAddrHint addr_hint;
 	if (ip_addr_binary.size() == sizeof(addr_hint.addr_ipv6))
 	{

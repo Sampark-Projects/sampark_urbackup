@@ -437,9 +437,26 @@ int main_fkt(int argc, char *argv[])
 		}
 	}
 #endif
-	
-	
 
+#ifndef _WIN32
+	if (signal(SIGINT, termination_handler) == SIG_IGN)
+		signal(SIGINT, SIG_IGN);
+	/*if(!daemon)
+	{
+		if (signal (SIGHUP, termination_handler) == SIG_IGN)
+			signal (SIGHUP, SIG_IGN);
+	}
+	else*/
+	{
+		if (signal(SIGHUP, hub_handler) == SIG_IGN)
+			signal(SIGHUP, SIG_IGN);
+	}
+	if (signal(SIGTERM, termination_handler) == SIG_IGN)
+		signal(SIGTERM, SIG_IGN);
+#else
+	signal(SIGABRT, abort_handler);
+	_set_invalid_parameter_handler(invalid_parameter_handler);
+#endif
 	
 	if(!logfile.empty())
 	{
@@ -560,30 +577,14 @@ int main_fkt(int argc, char *argv[])
 		
 		Server->createThread(lbs);
 	}
-
-#ifndef _WIN32
-	if (signal (SIGINT, termination_handler) == SIG_IGN)
-		signal (SIGINT, SIG_IGN);
-	/*if(!daemon)
-	{
-	    if (signal (SIGHUP, termination_handler) == SIG_IGN)
-			signal (SIGHUP, SIG_IGN);
-	}
-	else*/
-	{
-	    if (signal (SIGHUP, hub_handler) == SIG_IGN)
-			signal (SIGHUP, SIG_IGN);
-	}
-	if (signal (SIGTERM, termination_handler) == SIG_IGN)
-		signal (SIGTERM, SIG_IGN);
-#else
-	signal(SIGABRT, abort_handler);
-	_set_invalid_parameter_handler(invalid_parameter_handler);
-#endif
 	
 	((CSessionMgr*)Server->getSessionMgr())->startTimeoutSessionThread();
 
 	Server->startupComplete();
+
+#ifndef _WIN32
+	writestring("", "/var/run/urbackupsrv.ready");
+#endif
 
 	if(no_server==false )
 	{

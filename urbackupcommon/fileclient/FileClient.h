@@ -3,6 +3,7 @@
 
 #include <deque>
 #include <string.h>
+#include <set>
 #include "packet_ids.h"
 #include "../../urbackupcommon/fileclient/tcpstack.h"
 #include "socket_header.h"
@@ -119,7 +120,13 @@ public:
 			std::string toString() const;
 		};
 
-		_u32 GetServers(bool start, const std::vector<SAddrHint> &addr_hints);
+		struct GetServersErrors
+		{
+			std::set<std::string> broadcast_error_ipv4;
+			std::set<std::string> broadcast_error_ipv6;
+		};
+
+		_u32 GetServers(bool start, const std::vector<SAddrHint> &addr_hints, GetServersErrors& errors);
         std::vector<SAddrHint> getServers(void);
         std::vector<SAddrHint> getWrongVersionServers(void);
         std::vector<std::string> getServerNames(void);

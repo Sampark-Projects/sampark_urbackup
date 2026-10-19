@@ -170,7 +170,7 @@ bool IncrFileBackup::doFileBackup()
 	Server->Log(clientname+": Connecting to client...", LL_DEBUG);
 	std::string identity = client_main->getIdentity();
 	FileClient fc(false, identity, client_main->getProtocolVersions().filesrv_protocol_version, client_main->isOnInternetConnection(), client_main, use_tmpfiles?NULL:this);
-	std::unique_ptr<FileClientChunked> fc_chunked;
+	std::auto_ptr<FileClientChunked> fc_chunked;
 	if(intra_file_diffs)
 	{
 		if(client_main->getClientChunkedFilesrvConnection(fc_chunked, server_settings.get(), this, 60000))
@@ -227,8 +227,7 @@ bool IncrFileBackup::doFileBackup()
 	ServerLogger::Log(logid, clientname+" Starting incremental backup...", LL_DEBUG);
 
 	int incremental_num = resumed_full?0:(last.incremental+1);
-	if (!backup_dao->newFileBackup(incremental_num, clientid, backuppath_single, 
-		resumed_backup, Server->getTimeMS() - indexing_start_time, group, 0, 0))
+	if (!backup_dao->newFileBackup(incremental_num, clientid, backuppath_single, resumed_backup, Server->getTimeMS() - indexing_start_time, group))
 	{
 		ServerLogger::Log(logid, "Error creating new backup row in database", LL_ERROR);
 		has_early_error = true;
@@ -313,7 +312,7 @@ bool IncrFileBackup::doFileBackup()
 				return false;
 			}
 
-			std::unique_ptr<IFile> touch_f(Server->openFile(backuppath, MODE_WRITE));
+			std::auto_ptr<IFile> touch_f(Server->openFile(backuppath, MODE_WRITE));
 			if (touch_f.get() == NULL)
 			{
 				ServerLogger::Log(logid, "Could not touch file " + backuppath + ". " + os_last_error_str(), LL_ERROR);
@@ -526,7 +525,7 @@ bool IncrFileBackup::doFileBackup()
 	bool backup_with_components;
 	_i64 files_size = getIncrementalSize(tmp_filelist, diffs, backup_with_components);
 
-	std::unique_ptr<ServerDownloadThreadGroup> server_download(new ServerDownloadThreadGroup(fc, fc_chunked.get(), backuppath,
+	std::auto_ptr<ServerDownloadThreadGroup> server_download(new ServerDownloadThreadGroup(fc, fc_chunked.get(), backuppath,
 		backuppath_hashes, last_backuppath, last_backuppath_complete,
 		hashed_transfer, intra_file_diffs, clientid, clientname, clientsubname,
 		use_tmpfiles, tmpfile_path, server_token, use_reflink,
@@ -606,6 +605,13 @@ bool IncrFileBackup::doFileBackup()
 			bool b=list_parser.nextEntry(buffer[i], cf, &extra_params);
 			if(b)
 			{
+				if (folder_files.empty())
+				{
+					ServerLogger::Log(logid, "File list is corrupted (folder_files is empty)", LL_ERROR);
+					has_read_error = true;
+					break;
+				}
+
 				std::string osspecific_name;
 
 				if(!cf.isdir || cf.name!="..")
@@ -620,7 +626,7 @@ bool IncrFileBackup::doFileBackup()
 						if(cf.name=="..")
 						{
 							--skip_dir_completely;
-							if(skip_dir_completely>0)
+							if(skip_dir_completely>0 && !folder_files.empty())
 							{
 								curr_os_path=ExtractFilePath(curr_os_path, "/");
 								curr_path=ExtractFilePath(curr_path, "/");
@@ -819,7 +825,7 @@ bool IncrFileBackup::doFileBackup()
 								}
 								else
 								{
-									std::unique_ptr<DBScopedSynchronous> link_dao_synchronous;
+									std::auto_ptr<DBScopedSynchronous> link_dao_synchronous;
 									if (!remove_directory_link(backuppath + local_curr_os_path, *link_dao, clientid, link_dao_synchronous))
 									{
 										ServerLogger::Log(logid, "Could not remove symlinked directory \"" + backuppath + local_curr_os_path + "\" after symlinking metadata directory failed.", LL_ERROR);
@@ -989,7 +995,7 @@ bool IncrFileBackup::doFileBackup()
 								{
 									if(!copy_file(metadata_srcpath, metadata_fn))
 									{
-										if(client_main->handle_not_enough_space(metadata_fn))
+										if(client_main->handle_not_enough_space(metadata_fn, logid, *server_settings.get()))
 										{
 											if(!copy_file(metadata_srcpath, metadata_fn))
 											{
@@ -1033,7 +1039,7 @@ bool IncrFileBackup::doFileBackup()
 							}							
 						}
 					}
-					else //cf.name==".."
+					else if(!folder_files.empty()) //cf.name==".."
 					{
 						if((indirchange || dir_diff_stack.top()) && client_main->getProtocolVersions().file_meta>0 && !script_dir)
 						{
@@ -1168,7 +1174,7 @@ bool IncrFileBackup::doFileBackup()
 					else if(extra_params.find("special")!=extra_params.end() && (indirchange || file_changed || !use_snapshots) )
 					{
 						std::string touch_path = backuppath+local_curr_os_path;
-						std::unique_ptr<IFile> touch_file(Server->openFile(os_file_prefix(touch_path), MODE_WRITE));
+						std::auto_ptr<IFile> touch_file(Server->openFile(os_file_prefix(touch_path), MODE_WRITE));
 						if(touch_file.get()==NULL)
 						{
 							ServerLogger::Log(logid, "Error touching file at \""+touch_path+"\". " + systemErrorInfo(), LL_ERROR);
@@ -1482,11 +1488,11 @@ bool IncrFileBackup::doFileBackup()
 		tmp_filelist->Seek(0);
 		line = 0;
 		size_t output_offset=0;
-		std::stack<size_t> last_modified_offsets;
 		list_parser.reset();
 		script_dir=false;
 		indirchange=false;
 		has_read_error = false;
+		depth = 0;
 		while( (read=tmp_filelist->Read(buffer, 4096, &has_read_error))>0 )
 		{
 			if (has_read_error)
@@ -1514,7 +1520,7 @@ bool IncrFileBackup::doFileBackup()
 
 						if(cf.name!="..")
 						{
-							if(cf.name=="urbackup_backup_scripts")
+							if(depth == 0 && cf.name=="urbackup_backup_scripts")
 							{
 								script_dir=true;
 							}
@@ -1546,7 +1552,8 @@ bool IncrFileBackup::doFileBackup()
 								indirchange=false;
 							}
 
-							script_dir=false;
+							if(depth==0)
+								script_dir=false;
 						}
 
 
@@ -1661,7 +1668,7 @@ bool IncrFileBackup::doFileBackup()
 					c_has_error = true;
 			}
 
-			std::unique_ptr<IFile> sync_f;
+			std::auto_ptr<IFile> sync_f;
 			if (!c_has_error)
 			{
 				sync_f.reset(Server->openFile(os_file_prefix(backuppath_hashes + os_file_sep() + sync_fn), MODE_WRITE));
@@ -1768,7 +1775,7 @@ bool IncrFileBackup::doFileBackup()
 				c_has_error = true;
 		}
 
-		std::unique_ptr<IFile> sync_f;
+		std::auto_ptr<IFile> sync_f;
 		if (!c_has_error)
 		{
 			sync_f.reset(Server->openFile(os_file_prefix(backuppath_hashes + os_file_sep() + sync_fn), MODE_WRITE));
@@ -1814,7 +1821,7 @@ bool IncrFileBackup::doFileBackup()
 	{
 		if (phash_load.get() != NULL)
 		{
-			std::unique_ptr<IFile> tf(Server->openTemporaryFile());
+			std::auto_ptr<IFile> tf(Server->openTemporaryFile());
 			if (tf.get() != NULL)
 			{
 				if(copy_file(tmp_filelist, tf.get()))
@@ -1868,8 +1875,6 @@ SBackup IncrFileBackup::getLastIncremental( int group )
 		b.is_complete=last_incremental.complete>0;
 		b.is_resumed=last_incremental.resumed>0;
 		b.backupid=last_incremental.id;
-		b.incremental_ref = last_incremental.incremental_ref;
-		b.deletion_protected = last_incremental.deletion_protected;
 
 
 		ServerBackupDao::SLastIncremental last_complete_incremental =
@@ -1887,12 +1892,15 @@ SBackup IncrFileBackup::getLastIncremental( int group )
 
 		b.indexing_time_ms = duration.indexing_time_ms;
 		b.backup_time_ms = duration.duration*1000;
+
+		b.incremental_ref=0;
 		return b;
 	}
 	else
 	{
 		SBackup b;
 		b.incremental=-2;
+		b.incremental_ref=0;
 		return b;
 	}
 }
@@ -1907,7 +1915,7 @@ bool IncrFileBackup::deleteFilesInSnapshot(const std::string clientlist_fn, cons
 
 	FileListParser list_parser;
 
-	std::unique_ptr<IFile> tmp(Server->openFile(clientlist_fn, MODE_READ));
+	std::auto_ptr<IFile> tmp(Server->openFile(clientlist_fn, MODE_READ));
 	if(tmp.get()==NULL)
 	{
 		ServerLogger::Log(logid, "Could not open clientlist in ::deleteFilesInSnapshot", LL_ERROR);
@@ -1930,7 +1938,7 @@ bool IncrFileBackup::deleteFilesInSnapshot(const std::string clientlist_fn, cons
 		{
 			if(list_parser.nextEntry(buffer[i], curr_file, NULL))
 			{
-				if(curr_file.isdir && curr_file.name=="..")
+				if(curr_file.isdir && curr_file.name==".." && !folder_files.empty())
 				{
 					folder_files.pop();
 					curr_path=ExtractFilePath(curr_path, os_file_sep());
@@ -2009,7 +2017,7 @@ bool IncrFileBackup::deleteFilesInSnapshot(const std::string clientlist_fn, cons
 							if(ftype & EFileType_File && !keep_inplace
 								&& !Server->deleteFile(os_file_prefix(curr_fn)) )
 							{
-								std::unique_ptr<IFile> tf(Server->openFile(os_file_prefix(curr_fn), MODE_READ));
+								std::auto_ptr<IFile> tf(Server->openFile(os_file_prefix(curr_fn), MODE_READ));
 								if(tf.get()!=NULL)
 								{
 									ServerLogger::Log(logid, "Could not remove file \""+curr_fn+"\" in ::deleteFilesInSnapshot - " + systemErrorInfo(), no_error ? LL_WARNING : LL_ERROR);
@@ -2129,7 +2137,7 @@ void IncrFileBackup::addSparseFileEntry( std::string curr_path, SFile &cf, int c
 	if( (*md5ptr>=0 ? *md5ptr : -1* *md5ptr ) % copy_file_entries_sparse_modulo == incremental_num % copy_file_entries_sparse_modulo )
 	{
 		FileMetadata metadata;
-		std::unique_ptr<IFile> last_file(Server->openFile(os_file_prefix(backuppath+local_curr_os_path), MODE_READ));
+		std::auto_ptr<IFile> last_file(Server->openFile(os_file_prefix(backuppath+local_curr_os_path), MODE_READ));
 		if(!read_metadata(backuppath_hashes+local_curr_os_path, metadata) || last_file.get()==NULL)
 		{
 			ServerLogger::Log(logid, "Error adding sparse file entry. Could not read metadata from "+backuppath_hashes+local_curr_os_path, LL_WARNING);

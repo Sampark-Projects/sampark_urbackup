@@ -47,6 +47,7 @@ extern "C"
 }
 #include "Database.h"
 #include "stringtools.h"
+#include <assert.h>
 
 
 namespace
@@ -104,6 +105,9 @@ static void unlock_notify_cb(void **apArg, int nArg)
 
 CDatabase::~CDatabase()
 {
+#ifndef NDEBUG
+	db_thread_id = Server->getThreadID();
+#endif
 	destroyAllQueries();
 	for(std::map<int, IQuery*>::iterator iter=prepared_queries.begin();iter!=prepared_queries.end();++iter)
 	{
@@ -124,6 +128,9 @@ bool CDatabase::Open(std::string pFile, const std::vector<std::pair<std::string,
 	lock_count = p_lock_count;
 	unlock_cond = p_unlock_cond;
 	params = p_params;
+#ifndef NDEBUG
+	db_thread_id = Server->getThreadID();
+#endif
 
 	attached_dbs=attach;
 	in_transaction=false;
@@ -215,6 +222,7 @@ void CDatabase::destroyMutex(void)
 
 db_results CDatabase::Read(std::string pQuery)
 {
+	assert_thread_id();
 	//Server->Log("SQL Query(Read): "+pQuery, LL_DEBUG);
 	IQuery *q=Prepare(pQuery, false);
 	if(q!=NULL)
@@ -228,6 +236,7 @@ db_results CDatabase::Read(std::string pQuery)
 
 bool CDatabase::Write(std::string pQuery)
 {
+	assert_thread_id();
 	//Server->Log("SQL Query(Write): "+pQuery, LL_DEBUG);
 	IQuery *q=Prepare(pQuery, false);
 	if(q!=NULL)
@@ -246,6 +255,8 @@ bool CDatabase::Write(std::string pQuery)
 
 bool CDatabase::BeginReadTransaction()
 {
+	assert_thread_id();
+
 	if (write_lock.get() == NULL)
 	{
 		transaction_read_lock.reset(new IScopedReadLock(single_user_mutex));
@@ -265,6 +276,8 @@ bool CDatabase::BeginReadTransaction()
 
 bool CDatabase::BeginWriteTransaction()
 {
+	assert_thread_id();
+
 	if (write_lock.get() == NULL)
 	{
 		transaction_read_lock.reset(new IScopedReadLock(single_user_mutex));
@@ -284,6 +297,8 @@ bool CDatabase::BeginWriteTransaction()
 
 bool CDatabase::EndTransaction(void)
 {
+	assert_thread_id();
+
 	bool ret = Write("END;");
 	in_transaction=false;
 	transaction_read_lock.reset();
@@ -303,6 +318,8 @@ bool CDatabase::EndTransaction(void)
 
 bool CDatabase::RollbackTransaction()
 {
+	assert_thread_id();
+
 	bool ret = Write("ROLLBACK;");
 	in_transaction = false;
 	transaction_read_lock.reset();
@@ -322,6 +339,8 @@ bool CDatabase::RollbackTransaction()
 
 IQuery* CDatabase::Prepare(std::string pQuery, bool autodestroy)
 {
+	assert_thread_id();
+	
 	IScopedReadLock lock(NULL);
 
 	if (!in_transaction && write_lock.get()==NULL)
@@ -413,6 +432,8 @@ IQuery* CDatabase::Prepare(std::string pQuery, bool autodestroy)
 
 IQuery* CDatabase::Prepare(int id, std::string pQuery)
 {
+	assert_thread_id();
+	
 	IScopedReadLock lock(NULL);
 
 	if (!in_transaction && write_lock.get()==NULL)
@@ -436,6 +457,8 @@ IQuery* CDatabase::Prepare(int id, std::string pQuery)
 
 void CDatabase::destroyQuery(IQuery *q)
 {
+	assert_thread_id();
+
 	if(q==NULL)
 	{
 		return;
@@ -457,6 +480,8 @@ void CDatabase::destroyQuery(IQuery *q)
 
 void CDatabase::destroyAllQueries(void)
 {
+	assert_thread_id();
+
 	for(size_t i=0;i<queries.size();++i)
 	{
 		CQuery *cq=(CQuery*)queries[i];
@@ -467,6 +492,8 @@ void CDatabase::destroyAllQueries(void)
 
 _i64 CDatabase::getLastInsertID(void)
 {
+	assert_thread_id();
+
 	return sqlite3_last_insert_rowid(db);
 }
 
@@ -529,6 +556,8 @@ bool CDatabase::Import(const std::string &pFile)
 	if(file==NULL)
 		return false;
 
+	Write("PRAGMA foreign_keys = OFF");
+
 	unsigned int r;
 	char buf[4096];
 	std::string query;
@@ -540,8 +569,20 @@ bool CDatabase::Import(const std::string &pFile)
 		{
 			if(buf[i]==';' && state==0)
 			{
-				if(!Write(query))
-					return false;
+				if (query.find(".dbconfig ") == 0)
+				{
+					size_t nl = query.find("\n");
+					if (nl != std::string::npos)
+						query = query.substr(nl + 1);
+
+					if (!query.empty() && !Write(query))
+						return false;
+				}
+				else
+				{
+					if (!Write(query))
+						return false;
+				}
 
 				query.clear();
 				continue;
@@ -566,26 +607,24 @@ bool CDatabase::Import(const std::string &pFile)
 
 bool CDatabase::Dump(const std::string &pFile)
 {
+	assert_thread_id();
+
 	const char* db_fn = sqlite3_db_filename(db, NULL);
 	if (db_fn == NULL)
 		return false;
 
-	ShellState cd = {};
-	cd.openMode = 1;
-	cd.zDbFilename = db_fn;
-	cd.out=fopen(pFile.c_str(), "wb");
-	if(cd.out==0)
-	{
+	FILE* out = fopen(pFile.c_str(), "wb");
+	if (!out)
 		return false;
-	}
+
+	ShellState* cd = shell_state_init(db_fn, out);
+	if (!cd)
+		return false;
 
 	std::string cmd = ".dump";
-	int rc = do_meta_command_r(&cmd[0], &cd);
+	int rc = do_meta_command_r(&cmd[0], cd);
 
-	fclose(cd.out);
-
-	if (cd.db != 0)
-		sqlite3_close(cd.db);
+	shell_state_free(cd);
 
 	return rc == SQLITE_OK;
 }
@@ -596,22 +635,18 @@ bool CDatabase::Recover(const std::string & pFile)
 	if (db_fn == NULL)
 		return false;
 
-	ShellState cd = {};
-	cd.openMode = 1;
-	cd.zDbFilename = db_fn;
-	cd.out = fopen(pFile.c_str(), "wb");
-	if (cd.out == 0)
-	{
+	FILE* out = fopen(pFile.c_str(), "wb");
+	if (!out)
 		return false;
-	}
+
+	ShellState* cd = shell_state_init(db_fn, out);
+	if (!cd)
+		return false;
 
 	std::string cmd = ".recover";
-	int rc = do_meta_command_r(&cmd[0], &cd);
+	int rc = do_meta_command_r(&cmd[0], cd);
 
-	fclose(cd.out);
-
-	if (cd.db != 0)
-		sqlite3_close(cd.db);
+	shell_state_free(cd);
 
 	return rc==SQLITE_OK;
 }
@@ -728,16 +763,22 @@ bool CDatabase::Backup(const std::string &pFile, IBackupProgress* progress)
 
 void CDatabase::freeMemory()
 {
+	assert_thread_id();
+
 	sqlite3_db_release_memory(db);
 }
 
 int CDatabase::getLastChanges()
 {
+	assert_thread_id();
+
 	return sqlite3_changes(db);
 }
 
 std::string CDatabase::getTempDirectoryPath()
 {
+	assert_thread_id();
+
 	char* tmpfn = NULL;
 	if(sqlite3_file_control(db, NULL, SQLITE_FCNTL_TEMPFILENAME, &tmpfn)==SQLITE_OK && tmpfn!=NULL)
 	{
@@ -774,4 +815,8 @@ ISharedMutex* CDatabase::getSingleUseMutex()
 	}	
 }
 
+void CDatabase::assert_thread_id()
+{
+	assert(Server->getThreadID() == db_thread_id);
+}
 #endif //NO_SQLITE

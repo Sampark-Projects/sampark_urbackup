@@ -81,7 +81,7 @@ char* CTCPStack::getPacket(size_t* packetsize)
 		}
 	}
 	*packetsize = 0;
-	return nullptr;
+	return NULL;
 }
 
 void CTCPStack::reset(void)

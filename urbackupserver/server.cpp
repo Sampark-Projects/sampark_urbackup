@@ -183,12 +183,13 @@ void BackupServer::operator()(void)
 	q_update_lastseen = db->Prepare("UPDATE clients SET lastseen=datetime(?, 'unixepoch') WHERE id=?", false);
 
 	FileClient fc(true, "");
+	FileClient::GetServersErrors fc_errors;
 
 	Server->wait(1000);
 
 	while(true)
 	{
-		findClients(fc);
+		findClients(fc, fc_errors);
 		startClients(fc);
 
 		if(!ServerStatus::isActive() && settings->getValue("autoshutdown", "false")=="true")
@@ -218,7 +219,7 @@ void BackupServer::operator()(void)
 	}
 }
 
-void BackupServer::findClients(FileClient &fc)
+void BackupServer::findClients(FileClient &fc, FileClient::GetServersErrors& fc_errors)
 {
 	std::vector<FileClient::SAddrHint> addr_hints;
 	if(q_get_extra_hostnames!=NULL)
@@ -246,10 +247,10 @@ void BackupServer::findClients(FileClient &fc)
 		}
 	}
 
-	_u32 rc=fc.GetServers(true, addr_hints);
+	_u32 rc=fc.GetServers(true, addr_hints, fc_errors);
 	while(rc==ERR_CONTINUE)
 	{
-		rc=fc.GetServers(false, addr_hints);
+		rc=fc.GetServers(false, addr_hints, fc_errors);
 
 		if(exitpipe->isReadable())
 		{
@@ -1167,7 +1168,7 @@ void BackupServer::runServerRecovery(IDatabase * db)
 		db_single_result res;
 		while (cur.next(res))
 		{
-			std::unique_ptr<IFile> f(Server->openFile(os_file_prefix(res["path"])));
+			std::auto_ptr<IFile> f(Server->openFile(os_file_prefix(res["path"])));
 			if (f.get()!=NULL)
 			{
 				delete_missing = true;
@@ -1234,7 +1235,7 @@ void BackupServer::runServerRecovery(IDatabase * db)
 			}
 			else
 			{
-				std::unique_ptr<IFile> sync_f(Server->openFile(os_file_prefix(backuppath + os_file_sep() + ".hashes" + os_file_sep() + sync_fn), MODE_READ));
+				std::auto_ptr<IFile> sync_f(Server->openFile(os_file_prefix(backuppath + os_file_sep() + ".hashes" + os_file_sep() + sync_fn), MODE_READ));
 
 				if (sync_f.get() == NULL)
 				{
@@ -1259,7 +1260,7 @@ void BackupServer::runServerRecovery(IDatabase * db)
 	}
 
 	IQuery* q_set_done = db->Prepare("UPDATE backups SET done=0, complete=0 WHERE id=?");
-	std::unique_ptr<FileCleanups> file_cleanups(new FileCleanups);
+	std::auto_ptr<FileCleanups> file_cleanups(new FileCleanups);
 	for (size_t i = 0; i < to_delete.size(); ++i)
 	{
 		has_delete = true;
@@ -1310,7 +1311,7 @@ void BackupServer::runServerRecovery(IDatabase * db)
 			std::string path = res["path"];
 			std::string backupinfo = "[id=" + res["backupid"] + ", path=" + path + ", backuptime=" + res["backuptime"] + ", clientid=" + res["clientid"] + ", client=" + res["name"] + "]";
 
-			std::unique_ptr<IFile> image_f(Server->openFile(os_file_prefix(path), MODE_READ));
+			std::auto_ptr<IFile> image_f(Server->openFile(os_file_prefix(path), MODE_READ));
 
 			if (image_f.get() == NULL)
 			{
@@ -1346,7 +1347,7 @@ void BackupServer::runServerRecovery(IDatabase * db)
 			}
 			else
 			{
-				std::unique_ptr<IFile> sync_f(Server->openFile(os_file_prefix(res["path"] + ".sync"), MODE_READ));
+				std::auto_ptr<IFile> sync_f(Server->openFile(os_file_prefix(res["path"] + ".sync"), MODE_READ));
 
 				if (sync_f.get() == NULL)
 				{

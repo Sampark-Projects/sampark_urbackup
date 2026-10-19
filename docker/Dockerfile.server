@@ -1,0 +1,31 @@
+# Build and run UrBackup server from this source tree.
+# Build:  docker build -f docker/Dockerfile.server -t sampark-urbackup-server .
+FROM ubuntu:22.04 AS build
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential autoconf automake libtool pkg-config dos2unix git python3 \
+    libcurl4-openssl-dev libssl-dev libcrypto++-dev zlib1g-dev libzstd-dev libfuse-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+# Windows checkout has CRLF line endings; normalise everything the autotools build reads
+RUN find . -type f \( -name '*.sh' -o -name '*.ac*' -o -name 'Makefile*' -o -name '*.m4' \
+      -o -name '*.am' -o -name 'defaults*' -o -name 'init.d*' -o -name 'BUILDID' -o -name '*.py' \) \
+      -not -path './urbackupserver/www2/*' -print0 | xargs -0 dos2unix -q
+RUN python3 build/replace_versions.py || true
+RUN ./switch_build.sh server && autoreconf --install --force \
+    && ./configure --prefix=/usr --localstatedir=/var --sysconfdir=/etc \
+    && make -j"$(nproc)" && make install DESTDIR=/out
+
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libcurl4 libssl3 libcrypto++8 zlib1g libzstd1 libfuse2 btrfs-progs \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -r -m -d /var/urbackup urbackup
+COPY --from=build /out/ /
+EXPOSE 55413 55414 55415 35623/udp
+VOLUME ["/var/urbackup", "/backups"]
+RUN mkdir -p /var/urbackup /backups && chown urbackup:urbackup /var/urbackup /backups
+WORKDIR /var
+CMD ["urbackupsrv", "run", "--no-consoletime"]

@@ -65,7 +65,7 @@ void CHTTPProxy::operator()(void)
 	}
 
 	IPipe *srv=Server->ConnectStream(http_service->getProxyServer(), http_service->getProxyPort(), 30000);
-	if(srv==nullptr)
+	if(srv==NULL)
 	{
 		for(size_t i=0;i<output.size();++i)
 		{
@@ -87,7 +87,7 @@ void CHTTPProxy::operator()(void)
 		nb.rcount=new int;
 		++nbuffers;
 		*(nb.rcount)=1;
-		if(notify!=nullptr)
+		if(notify!=NULL)
 		{
 			IPipe *np;
 			if(notify->Read((char*)&np, sizeof(IPipe*), 0))

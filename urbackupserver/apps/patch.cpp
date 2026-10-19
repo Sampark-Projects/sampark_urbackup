@@ -66,7 +66,7 @@ int patch_hash()
 		return 2;
 	}
 
-	std::unique_ptr<IFile> f(Server->openFile(source_file, MODE_READ));
+	std::auto_ptr<IFile> f(Server->openFile(source_file, MODE_READ));
 	if (f.get() == NULL)
 	{
 		Server->Log("Cannot open source file " + source_file + ". " + os_last_error_str(), LL_ERROR);
@@ -74,14 +74,14 @@ int patch_hash()
 	}
 
 	std::string patch_file_fn = Server->getServerParameter("patch_file");
-	std::unique_ptr<IFile> patch_file(Server->openFile(patch_file_fn, MODE_READ));
+	std::auto_ptr<IFile> patch_file(Server->openFile(patch_file_fn, MODE_READ));
 	if (patch_file.get() == NULL)
 	{
 		Server->Log("Cannot open patch file " + patch_file_fn + ". " + os_last_error_str(), LL_ERROR);
 		return 2;
 	}
 
-	std::unique_ptr<ExtentIterator> extent_iterator;
+	std::auto_ptr<ExtentIterator> extent_iterator;
 
 	if (!sparse_extents_file.empty())
 	{
@@ -96,5 +96,6 @@ int patch_hash()
 	}
 
 	bool b = chunk_patcher.ApplyPatch(f.get(), patch_file.get(), extent_iterator.get());
+	Server->Log("Patch applied to " + source_file + " with patch file " + patch_file_fn + (b ? " successfully" : " unsuccessfully"), LL_INFO);
 	return b ? 0 : 1;
 }

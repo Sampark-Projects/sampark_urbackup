@@ -31,15 +31,17 @@ make -j8
 
 ### Building on macOS
 
-See the separate [`readme-macos.md`](readme-macos.md) for building instructions for macOS.
+See the separate `readme-macos.md` for building instructions for macOS.
 
 
 ### Building on Windows
 
-If git is in `PATH` you can download all dependencies by running `update_deps.bat`.
+Build with Visual Studio 2019:
 
-Afterwards opening and compiling the solution `UrBackupBackend.sln` with
-Microsoft Visual Studio 2015 should work.
+ * Install [vcpkg](https://vcpkg.io/en/index.html) and run `vcpkg integrate install`
+ * Set global environment variable `VCPKG_FEATURE_FLAGS` to `manifests`
+ * Open `UrBackupBackend.sln` with Visual Studio 2019 and build (and run)
 
 `build_client.bat` and `build_server.bat` build the installers but you need
 to install a lot of dependencies like WiX, NSIS plus plugins, etc.
+

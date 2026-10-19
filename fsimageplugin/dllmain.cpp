@@ -71,6 +71,7 @@ extern IServer* Server;
 #include "win_dialog.h"
 #endif
 #include "FileWrapper.h"
+#include "FSImageFactory.h"
 
 #ifdef __linux__
 #include <linux/fs.h>
@@ -102,7 +103,7 @@ namespace
 		IFile* out = Server->openFile(tmp_output, MODE_WRITE);
 		ObjectScope out_file(out);
 
-		if(out==nullptr)
+		if(out==NULL)
 		{
 			Server->Log("Error opening output file \""+output+"\"", LL_ERROR);
 			return false;
@@ -110,9 +111,9 @@ namespace
 
 		if(findextension(fn)=="vhdz")
 		{
-			std::unique_ptr<VHDFile> vhdfile(new VHDFile(fn, true, 0));
+			std::auto_ptr<VHDFile> vhdfile(new VHDFile(fn, true, 0));
 
-			if(vhdfile->isOpen() && vhdfile->getParent()!=nullptr)
+			if(vhdfile->isOpen() && vhdfile->getParent()!=NULL)
 			{
 				if(vhdfile->isCompressed())
 				{
@@ -127,6 +128,28 @@ namespace
 						return false;
 					}
 				}				
+			}
+		}
+
+		if (findextension(fn) == "vhdxz")
+		{
+			std::auto_ptr<VHDXFile> vhdfile(new VHDXFile(fn, true, 0));
+
+			if (vhdfile->isOpen() && vhdfile->getParent() != NULL)
+			{
+				if (vhdfile->isCompressed())
+				{
+					std::string parent_fn = vhdfile->getParent()->getFilename();
+					vhdfile.reset();
+					Server->Log("Decompressing parent VHDX \"" + parent_fn + "\"...", LL_INFO);
+					bool b = decompress_vhd(parent_fn, parent_fn);
+
+					if (!b)
+					{
+						Server->Log("Error decompressing parent VHDX", LL_ERROR);
+						return false;
+					}
+				}
 			}
 		}
 
@@ -191,22 +214,22 @@ namespace
 
 
 	IVHDFile* open_device_file(std::string device_verify, bool read_only=true, int64 dst_size = 0,
-		std::string parent_fn=std::string())
+		std::string parent_fn=std::string(), bool fast_mode=false)
 	{
 		std::string ext = strlower(findextension(device_verify));
 		if(ext=="vhd" || ext=="vhdz")
 		{
 			if(parent_fn.empty())
-				return new VHDFile(device_verify, read_only, dst_size);
+				return new VHDFile(device_verify, read_only, dst_size, 2*1024*1024, fast_mode);
 			else
-				return new VHDFile(device_verify, parent_fn, read_only);
+				return new VHDFile(device_verify, parent_fn, read_only, fast_mode);
 		}
 		else if (ext == "vhdx" || ext == "vhdxz")
 		{
 			if (parent_fn.empty())
-				return new VHDXFile(device_verify, read_only, dst_size);
+				return new VHDXFile(device_verify, read_only, dst_size, 2 * 1024 * 1024, fast_mode);
 			else
-				return new VHDXFile(device_verify, parent_fn, read_only);
+				return new VHDXFile(device_verify, parent_fn, read_only, fast_mode);
 		}
 #if !defined(_WIN32) && !defined(__APPLE__)
 		else if(ext=="raw")
@@ -217,7 +240,7 @@ namespace
 		else
 		{
 			Server->Log("Unknown image file extension \""+ext+"\"", LL_ERROR);
-			return nullptr;
+			return NULL;
 		}
 	}
 	
@@ -254,7 +277,7 @@ namespace
 
 		if(fn.empty())
 		{
-			Server->Log("No input VHD", LL_ERROR);
+			Server->Log("No input VHD(X)", LL_ERROR);
 			return false;
 		}
 
@@ -262,8 +285,8 @@ namespace
 
 		for(size_t i=0;i<fn.size();++i)
 		{
-			std::unique_ptr<IFile> f(Server->openFile(fn[i]+".mbr", MODE_READ));
-			if(f.get()==nullptr)
+			std::auto_ptr<IFile> f(Server->openFile(fn[i]+".mbr", MODE_READ));
+			if(f.get()==NULL)
 			{
 				Server->Log("Could not open MBR file "+fn[i]+".mbr", LL_ERROR);
 				exit(1);
@@ -295,9 +318,13 @@ namespace
 			mbrdatas.push_back(mbrdata);
 		}
 
-		std::string mbr = mbrdatas[0].mbr_data;
+		if (mbrdatas.empty())
+		{
+			Server->Log("Could not open any MBR data", LL_ERROR);
+			return false;
+		}
 
-		partition* partitions = reinterpret_cast<partition*>(&mbr[446]);
+		SMBRData& mbrdata = mbrdatas[0];
 
 		std::string skip_s=Server->getServerParameter("skip");
 		int skip=1024*512;
@@ -305,7 +332,6 @@ namespace
 		{
 			skip=atoi(skip_s.c_str());
 		}
-
 		
 		std::vector<IFile*> input_files;
 		std::vector<IFilesystem*> input_fs;
@@ -318,6 +344,12 @@ namespace
 		int64 total_size = 0;
 		int64 total_written = 0;
 
+		FSImageFactory img_fak;
+
+		bool gpt_style = false;
+		std::vector<IFSImageFactory::SPartition> partitions = img_fak.readPartitions(mbrdata.mbr_data,
+			mbrdata.gpt_header, mbrdata.gpt_table, gpt_style);
+
 		for(size_t i=0;i<fn.size();++i)
 		{
 			VHDFile* in(new VHDFile(fn[i], true, 0));
@@ -329,7 +361,7 @@ namespace
 
 			input_files[i] = new FileWrapper(in, skip);
 
-			FSNTFS *ntfs = new FSNTFS(input_files[i], IFSImageFactory::EReadaheadMode_None, false, nullptr);
+			FSNTFS *ntfs = new FSNTFS(input_files[i], IFSImageFactory::EReadaheadMode_None, false, NULL);
 
 			if(!ntfs->hasError())
 			{
@@ -343,48 +375,102 @@ namespace
 				total_copy_bytes+=input_files[i]->Size();
 			}
 
-			partition* cpart = partitions + (mbrdatas[i].partition_number-1);
-
-			/*unsigned char chs_expected[3] = { 0xfe, 0xff, 0xff };
-			if(memcmp(cpart->chs_begin, chs_expected, 3)!=0
-				|| memcmp(cpart->chs_end, chs_expected,3)!=0)
+			if (mbrdatas[i].partition_number >= partitions.size())
 			{
-				Server->Log(L"MBR partition of Volume "+mbrdatas[i].volume_name+L" does not use LBA addressing scheme", LL_ERROR);
+				Server->Log("Partitions number of input file " + fn[i] +
+					" larger than parsed partitions from MBR/GPT", LL_ERROR);
 				return false;
-			}*/
+			}
 
-			cpart->start_sector=little_endian(cpart->start_sector);
-			cpart->nr_sector=little_endian(cpart->nr_sector);
+			IFSImageFactory::SPartition partition = partitions[mbrdatas[i].partition_number];
+			
+			total_size = (std::max)(total_size, partition.offset + partition.length);
+		}		
 
-			total_size = (std::max)(total_size, cpart->start_sector*c_sector_size + cpart->nr_sector*c_sector_size);
-		}
-
-		VHDFile vhdout(output, false, total_size, 2*1024*1024, true, false);
-		if(!vhdout.isOpen())
+		if (gpt_style)
 		{
-			Server->Log("Error opening output VHD-File \""+output+"\"", LL_ERROR);
-			return false;
+			total_size = (std::max)(total_size, mbrdata.backup_gpt_header_pos + 512);
 		}
 
 		int64 curr_pos=0;
 
-		vhdout.Seek(0);
+		std::auto_ptr<IVHDFile> vhdout(open_device_file(output, false, total_size, std::string(), true));
+		IFile* vhdout_file = reinterpret_cast<IFile*>(vhdout.get());
 
-		if(vhdout.Write(mbr.data(), static_cast<_u32>(mbr.size()))!=static_cast<_u32>(mbr.size()))
+		if (vhdout.get()==NULL || !vhdout->isOpen())
+		{
+			Server->Log("Error opening output VHD(X)-File \"" + output + "\"", LL_ERROR);
+			return false;
+		}
+
+		vhdout->Seek(0);
+
+		if(vhdout->Write(mbrdata.mbr_data.data(), static_cast<_u32>(mbrdata.mbr_data.size()))
+			!=static_cast<_u32>(mbrdata.mbr_data.size()))
 		{
 			Server->Log("Error writing MBR", LL_ERROR);
 			return false;
 		}
 
+		if (mbrdata.gpt_style)
+		{
+			Server->Log("Writing GPT header...");
+			if (vhdout_file->Write(mbrdata.gpt_header_pos, mbrdata.gpt_header) 
+				!= mbrdata.gpt_header.size())
+			{
+				Server->Log("Writing GPT header failed. " + os_last_error_str(), LL_ERROR);
+			}
+
+			Server->Log("Writing GPT table...");
+			if (vhdout_file->Write(mbrdata.gpt_table_pos, mbrdata.gpt_table) 
+				!= mbrdata.gpt_table.size())
+			{
+				Server->Log("Writing GPT table failed. " + os_last_error_str(), LL_ERROR);
+			}
+
+			if (mbrdata.backup_gpt_header_pos != -1)
+			{
+				Server->Log("Writing GPT backup header...");
+				if (vhdout_file->Write(mbrdata.backup_gpt_header_pos, mbrdata.backup_gpt_header) 
+					!= mbrdata.backup_gpt_header.size())
+				{
+					Server->Log("Writing GPT backup header failed. " + os_last_error_str(), LL_ERROR);
+				}
+			}
+
+			if (mbrdata.backup_gpt_table_pos != -1)
+			{
+				Server->Log("Writing GPT backup table...");
+				if (vhdout_file->Write(mbrdata.backup_gpt_table_pos, mbrdata.backup_gpt_table) 
+					!= mbrdata.backup_gpt_table.size())
+				{
+					Server->Log("Writing backup GPT table failed. " + os_last_error_str(), LL_ERROR);
+				}
+			}
+		}
+
+		if (mbrdata.extra_data_pos != -1)
+		{
+			Server->Log("Writing extra data at position " + convert(mbrdata.extra_data_pos) + 
+				" size " + convert(mbrdata.extra_data.size()) + " ...");
+			if (vhdout_file->Write(mbrdata.extra_data_pos, mbrdata.extra_data) != mbrdata.extra_data.size())
+			{
+				Server->Log("Writing extra data failed. " + os_last_error_str(), LL_ERROR);
+			}
+		}
+
 		for(size_t i=0;i<fn.size();++i)
 		{
-			Server->Log("Writing "+fn[i]+" into output VHD...");
+			IFSImageFactory::SPartition cpart = partitions[mbrdatas[i].partition_number];
 
-			partition* cpart = partitions + (mbrdatas[i].partition_number-1);
-			int64 out_pos = cpart->start_sector*c_sector_size;
-			int64 max_pos = out_pos + cpart->nr_sector*c_sector_size;
+			int64 out_pos = cpart.offset;
+			int64 max_pos = cpart.offset + cpart.length;
 
-			if(input_fs[i]!=nullptr)
+			Server->Log("Writing "+fn[i]+" into output VHD(x)... Partition="
+				+ convert(mbrdatas[i].partition_number)+" offset=" + convert(out_pos)
+				+" length="+PrettyPrintBytes(cpart.length), LL_ERROR);
+
+			if(input_fs[i]!=NULL)
 			{
 				Server->Log("Optimized by only writing used NTFS sectors...");
 
@@ -394,12 +480,12 @@ namespace
 				for(int64 block=0;block<numblocks;++block)
 				{
 					IFilesystem::IFsBuffer* buf = input_fs[i]->readBlock(block);
-					if(buf!=nullptr)
+					if(buf!=NULL)
 					{
 						fs_buffer fsb(input_fs[i], buf);
 
-						vhdout.Seek(out_pos);
-						if(vhdout.Write(buf->getBuf(), static_cast<_u32>(blocksize))!=static_cast<_u32>(blocksize))
+						vhdout->Seek(out_pos);
+						if(vhdout->Write(buf->getBuf(), static_cast<_u32>(blocksize))!=static_cast<_u32>(blocksize))
 						{
 							Server->Log("Error writing to VHD output file", LL_ERROR);
 							return false;
@@ -424,7 +510,7 @@ namespace
 				std::vector<char> buf;
 				buf.resize(32768);
 
-				vhdout.Seek(out_pos);
+				vhdout->Seek(out_pos);
 
 				if(out_pos+input_files[i]->Size()>max_pos)
 				{
@@ -446,7 +532,7 @@ namespace
 						return false;
 					}
 
-					if(vhdout.Write(buf.data(), read)!=read)
+					if(vhdout->Write(buf.data(), read)!=read)
 					{
 						Server->Log("Error writing to VHD output file (2)", LL_ERROR);
 						return false;
@@ -469,7 +555,7 @@ namespace
 #ifdef FIBMAP
 		//leaks
 
-		std::unique_ptr<IFile> f(Server->openFile(fn, MODE_READ));
+		std::auto_ptr<IFile> f(Server->openFile(fn, MODE_READ));
 
 		int fd = open64(fn.c_str(), O_RDONLY| O_LARGEFILE);
 
@@ -580,7 +666,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	if(!compress_file.empty())
 	{
 		IFile* in = Server->openFile(compress_file, MODE_READ_SEQUENTIAL);
-		if(in==nullptr)
+		if(in==NULL)
 		{
 			Server->Log("Cannot open file \""+compress_file+"\" to compress", LL_ERROR);
 			exit(1);
@@ -633,9 +719,9 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		if(decompress=="SelectViaGUI")
 		{
 			std::string filter;
-			filter += "Compressed image files (*.vhdz)";
+			filter += "Compressed image files (*.vhdz;*.vhdxz)";
 			filter += '\0';
-			filter += "*.vhdz";
+			filter += "*.vhdz;*.vhdxz";
 			filter += '\0';
 			filter += '\0';
 			std::vector<std::string> res = file_via_dialog("Please select compressed image file to decompress",
@@ -662,7 +748,8 @@ DLLEXPORT void LoadActions(IServer* pServer)
 #endif
 
 		std::string targetName = decompress;
-		if(findextension(decompress)!="vhdz" && findextension(decompress)!="urz")
+		if(findextension(decompress)!="vhdz" && findextension(decompress)!="urz"
+			&& findextension(decompress) != "vhdxz")
 		{
 			Server->Log("Unknown file extension: "+findextension(decompress), LL_ERROR);
 			exit(1);
@@ -688,9 +775,9 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		if(assemble=="SelectViaGUI")
 		{
 			std::string filter;
-			filter += "Image files (*.vhdz;*.vhd)";
+			filter += "Image files (*.vhdz;*.vhd;*.vhdxz;*.vhdx)";
 			filter += '\0';
-			filter += "*.vhdz;*.vhd";
+			filter += "*.vhdz;*.vhd;*.vhdxz;*.vhdx";
 			filter += '\0';
 			/*filter += L"Image files (*.vhd)";
 			filter += '\0';
@@ -710,10 +797,14 @@ DLLEXPORT void LoadActions(IServer* pServer)
 			filter += '\0';
 			filter += "*.vhd";
 			filter += '\0';
+			filter += "Image file v2 (*.vhdx)";
+			filter += '\0';
+			filter += "*.vhdx";
+			filter += '\0';
 			filter += '\0';
 
 			std::vector<std::string> output_files = file_via_dialog("Please select where to save the output image",
-				filter, false, false, "vhd");
+				filter, false, false, "vhdx");
 
 			if(!output_files.empty())
 			{
@@ -752,7 +843,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 
 	if(!devinfo.empty())
 	{
-		FSNTFS ntfs("\\\\.\\"+devinfo+":", IFSImageFactory::EReadaheadMode_None, false, nullptr);
+		FSNTFS ntfs("\\\\.\\"+devinfo+":", IFSImageFactory::EReadaheadMode_None, false, NULL);
 	
 		if(!ntfs.hasError())
 		{
@@ -766,7 +857,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	{
 		Server->Log("VHDCopy.");
 		IVHDFile* in = open_device_file(vhdcopy_in);
-		if(in==nullptr || in->isOpen()==false)
+		if(in==NULL || in->isOpen()==false)
 		{
 			Server->Log("Error opening image file \""+vhdcopy_in+"\"", LL_ERROR);
 			exit(4);
@@ -785,7 +876,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		else
 		{
 			IFile *out=Server->openFile(vhdcopy_out, MODE_RW);
-			if(out==nullptr)
+			if(out==NULL && vhdcopy_out!="null")
 			{
 				Server->Log("Couldn't open output file", LL_ERROR);
 				exit(6);
@@ -793,10 +884,10 @@ DLLEXPORT void LoadActions(IServer* pServer)
 			else
 			{
 				std::string skip_s=Server->getServerParameter("skip");
-				int skip=1024*512;
+				int64 skip=1024*512;
 				if(!skip_s.empty())
 				{
-					skip=atoi(skip_s.c_str());
+					skip=watoi64(skip_s);
 				}
 				else if (is_disk_mbr(vhdcopy_in + ".mbr"))
 				{
@@ -812,11 +903,13 @@ DLLEXPORT void LoadActions(IServer* pServer)
 				uint64 currpos=skip;
 				bool is_ok=true;
 
-				out->Seek(0);
+				if(out)
+					out->Seek(0);
+
 				while(currpos%vhd_blocksize!=0)
 				{
 					is_ok=in->Read(buffer, 512, read);
-					if(read>0)
+					if(read>0 && out)
 					{
 						_u32 rc=out->Write(buffer, (_u32)read);
 						if(rc!=read)
@@ -838,7 +931,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 					if(in->has_sector())
 					{
 						is_ok=in->Read(buffer, 4096, read);
-						if(read>0)
+						if(read>0 && out)
 						{
 							_u32 rc=out->Write(buffer, (_u32)read);
 							if(rc!=read)
@@ -847,6 +940,10 @@ DLLEXPORT void LoadActions(IServer* pServer)
 								exit(7);
 							}
 						}
+						if (!is_ok && currpos + read < in->getSize())
+						{
+							Server->Log("Error reading from input file. " + os_last_error_str(), LL_ERROR);
+						}
 						currpos+=read;
 					}
 					else
@@ -854,7 +951,8 @@ DLLEXPORT void LoadActions(IServer* pServer)
 						read=4096;
 						currpos+=read;
 						in->Seek(currpos);
-						out->Seek(currpos-skip);
+						if(out)
+							out->Seek(currpos-skip);
 					}
 					
 					++p_skip;
@@ -883,9 +981,9 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	{
 		Server->Log("VHDMake.");
 
-		std::unique_ptr<IFsFile> inFile(Server->openFile(vhdmake_in, MODE_READ));
+		std::auto_ptr<IFsFile> inFile(Server->openFile(vhdmake_in, MODE_READ));
 
-		if (inFile.get() == nullptr)
+		if (inFile.get() == NULL)
 		{
 			Server->Log("Error opening " + vhdmake_in + ". ", LL_ERROR);
 			exit(1);
@@ -893,13 +991,11 @@ DLLEXPORT void LoadActions(IServer* pServer)
 
 		std::string vhd_out = Server->getServerParameter("vhd_out");
 		IVHDFile* vhdfile = open_device_file(vhd_out, false, inFile->Size());
-		if (vhdfile == nullptr)
+		if (vhdfile == NULL)
 		{
 			Server->Log("Error opening " + vhd_out + ". ", LL_ERROR);
 			exit(1);
 		}
-
-		bool skip_zeroes = Server->getServerParameter("skip_zeroes") == "1";
 
 		std::vector<char> buf(512 * 1024);
 
@@ -910,25 +1006,6 @@ DLLEXPORT void LoadActions(IServer* pServer)
 			{
 				Server->Log("Error reading from in file", LL_ERROR);
 				exit(2);
-			}
-
-			if (skip_zeroes)
-			{
-				bool is_zero = true;
-				for (_u32 i = 0; i < towrite; ++i)
-				{
-					if (buf[i] != 0)
-					{
-						is_zero = false;
-						break;
-					}
-				}
-
-				if (is_zero)
-				{
-					vhdfile->Seek(pos + towrite);
-					continue;
-				}
 			}
 
 			if (vhdfile->Write(buf.data(), towrite) != towrite)
@@ -948,9 +1025,9 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	{
 		Server->Log("VHDMake Diff.");
 
-		std::unique_ptr<IFsFile> inFile(Server->openFile(vhdmake_diff_in, MODE_READ));
+		std::auto_ptr<IFsFile> inFile(Server->openFile(vhdmake_diff_in, MODE_READ));
 
-		if (inFile.get() == nullptr)
+		if (inFile.get() == NULL)
 		{
 			Server->Log("Error opening " + vhdmake_diff_in + ". ", LL_ERROR);
 			exit(1);
@@ -972,9 +1049,9 @@ DLLEXPORT void LoadActions(IServer* pServer)
 			exit(2);
 		}
 
-		std::unique_ptr<IFsFile> inParentFile(Server->openFile(vhdmake_in_parent, MODE_READ));
+		std::auto_ptr<IFsFile> inParentFile(Server->openFile(vhdmake_in_parent, MODE_READ));
 
-		if (inParentFile.get() == nullptr)
+		if (inParentFile.get() == NULL)
 		{
 			Server->Log("Error opening " + vhdmake_in_parent + ". ", LL_ERROR);
 			exit(1);
@@ -983,7 +1060,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		std::string vhd_out = Server->getServerParameter("vhd_out");
 		Server->deleteFile(vhd_out); //TODO: rm
 		IVHDFile* vhdfile = open_device_file(vhd_out, false, inFile->Size(), vhd_out_parent);
-		if (vhdfile == nullptr)
+		if (vhdfile == NULL)
 		{
 			Server->Log("Error opening " + vhd_out + ". ", LL_ERROR);
 			exit(1);
@@ -1034,7 +1111,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		IFile *hf1=Server->openFile(hashfilecomp_1, MODE_READ);
 		IFile *hf2=Server->openFile(Server->getServerParameter("hashfilecomp_2"), MODE_READ);
 		
-		if(hf1==nullptr || hf2==nullptr )
+		if(hf1==NULL || hf2==NULL )
 		{
 			Server->Log("Error opening hashfile", LL_ERROR);
 		}
@@ -1102,9 +1179,9 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	std::string image_verify=Server->getServerParameter("image_verify");
 	if(!image_verify.empty())
 	{
-		std::unique_ptr<IVHDFile> in(open_device_file(image_verify));
+		std::auto_ptr<IVHDFile> in(open_device_file(image_verify));
 
-		if(in.get()==nullptr || in->isOpen()==false)
+		if(in.get()==NULL || in->isOpen()==false)
 		{
 			Server->Log("Error opening Image-File \""+image_verify+"\"", LL_ERROR);
 			exit(4);
@@ -1119,7 +1196,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		}
 
 		IFile *hashfile=Server->openFile(s_hashfile, MODE_READ);
-		if(hashfile==nullptr)
+		if(hashfile==NULL)
 		{
 			Server->Log("Error opening hashfile");
 			exit(5);
@@ -1231,9 +1308,9 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	std::string device_verify=Server->getServerParameter("device_verify");
 	if(!device_verify.empty())
 	{
-		std::unique_ptr<IVHDFile> in(open_device_file(device_verify));
+		std::auto_ptr<IVHDFile> in(open_device_file(device_verify));
 
-		if(in.get()==nullptr || in->isOpen()==false)
+		if(in.get()==NULL || in->isOpen()==false)
 		{
 			Server->Log("Error opening Image-File \""+device_verify+"\"", LL_ERROR);
 			exit(4);
@@ -1241,7 +1318,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 
 		int skip=1024*512;
 		FileWrapper wrapper(in.get(), skip);
-		FSNTFS fs(&wrapper, IFSImageFactory::EReadaheadMode_None, false, nullptr);
+		FSNTFS fs(&wrapper, IFSImageFactory::EReadaheadMode_None, false, NULL);
 		if(fs.hasError())
 		{
 			Server->Log("Error opening device file", LL_ERROR);
@@ -1257,7 +1334,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		}
 
 		IFile *hashfile=Server->openFile(s_hashfile, MODE_READ);
-		if(hashfile==nullptr)
+		if(hashfile==NULL)
 		{
 			Server->Log("Error opening hashfile "+s_hashfile);
 			exit(7);
@@ -1285,7 +1362,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 			{
 				fs_buffer buf(&fs, fs.readBlock(currpos/ntfs_blocksize));
 
-				if(buf.get()==nullptr)
+				if(buf.get()==NULL)
 				{
 					Server->Log("Could not read block "+convert(currpos/ntfs_blocksize), LL_ERROR);
 				}
@@ -1477,7 +1554,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 
 		if(Server->getServerParameter("fix")!="true")
 		{
-			FSNTFS fs(&vhd, IFSImageFactory::EReadaheadMode_None, false, nullptr);
+			FSNTFS fs(&vhd, IFSImageFactory::EReadaheadMode_None, false, NULL);
 			if(fs.hasError())
 			{
 				Server->Log("NTFS filesystem has errors", LL_ERROR);
@@ -1486,7 +1563,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		}
 		else
 		{
-			FSNTFS fs(&vhd, IFSImageFactory::EReadaheadMode_None, false, nullptr);
+			FSNTFS fs(&vhd, IFSImageFactory::EReadaheadMode_None, false, NULL);
 			if(fs.hasError())
 			{
 				Server->Log("NTFS filesystem has errors", LL_ERROR);

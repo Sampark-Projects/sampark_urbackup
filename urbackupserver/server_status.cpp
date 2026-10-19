@@ -375,7 +375,6 @@ void ServerStatus::setProcessSpeed(const std::string &clientname, size_t id, dou
 			proc->past_speed_bpms.pop_front();
 		}
 		proc->speed_bpms = speed_bpms;
-		proc->speed_set_time = Server->getTimeMS();
 	}
 }
 
@@ -387,8 +386,19 @@ bool ServerStatus::removeStatus( const std::string &clientname )
 
 	if(it!=status.end())
 	{
-		status.erase(it);
-		return true;
+		if (it->second.running_jobs > 0)
+		{
+			Server->Log("Client " + clientname + " has running jobs when removing status. Just resetting", LL_WARNING);
+			const int running_jobs = it->second.running_jobs;
+			it->second = SStatus();
+			it->second.running_jobs = running_jobs;
+			return false;
+		}
+		else
+		{
+			status.erase(it);
+			return true;
+		}
 	}
 	else
 	{
@@ -514,6 +524,7 @@ void ServerStatus::subRunningJob( const std::string &clientname )
 
 	IScopedLock lock(mutex);
 	SStatus *s=&status[clientname];
+	assert(s->running_jobs > 0);
 	s->running_jobs-=1;
 }
 
@@ -522,7 +533,7 @@ int ServerStatus::numRunningJobs( const std::string &clientname )
 	assert(!clientname.empty());
 
 	IScopedLock lock(mutex);
-	SStatus *s=&status[clientname];
+	const SStatus *s=&status[clientname];
 	return s->running_jobs;
 }
 

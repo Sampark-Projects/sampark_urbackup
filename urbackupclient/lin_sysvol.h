@@ -20,7 +20,9 @@ namespace
 			return std::string();
 		}
 		struct mntent *ent;
-		while (NULL != (ent = getmntent(aFile)))
+		struct mntent entbuf;
+		char buf[1024];
+		while (NULL != (ent = getmntent_r(aFile, &entbuf, buf, sizeof(buf))))
 		{
 			if(std::string(ent->mnt_dir)==path)
 			{
@@ -34,6 +36,11 @@ namespace
 #endif //HAVE_MNTENT_H
 	}
 
+	std::string getRootVol()
+    {
+        return getMountDevice("/");
+    }
+
     std::string getSysVolumeCached(std::string& mpath)
     {
         mpath = getMountDevice("/boot");
@@ -42,13 +49,11 @@ namespace
 
     std::string getEspVolumeCached(std::string& mpath)
     {
-        return "";
-    }
-
-    std::string getRootVol()
-    {
-        return getMountDevice("/");
-    }
+        mpath = getMountDevice("/boot/efi");
+		if(mpath.empty())
+			mpath = getMountDevice("/efi");
+        return mpath;
+    }    
 
 	bool isDevice(const std::string& path)
 	{

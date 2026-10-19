@@ -58,13 +58,12 @@ extern IServer* Server;
 
 #include "../fsimageplugin/IFSImageFactory.h"
 #include "../cryptoplugin/ICryptoFactory.h"
-#include "../btrfs/btrfsplugin/IBtrfsFactory.h"
-#include "../clouddrive/IClouddriveFactory.h"
 
 #include "database.h"
 #include "tokens.h"
 
 #include "ClientService.h"
+#include "SambaService.h"
 #include "client.h"
 #include "../stringtools.h"
 #include "ServerIdentityMgr.h"
@@ -76,16 +75,12 @@ extern IServer* Server;
 #include "InternetClient.h"
 #include <stdlib.h>
 #include "file_permissions.h"
-#include "FilesystemManager.h"
 
 #include "../urbackupcommon/chunk_hasher.h"
 #include "../urbackupcommon/WalCheckpointThread.h"
-#include "client_restore_http.h"
 
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
 #include "../common/miniz.h"
-#include <vector>
-#include <thread>
 
 namespace
 {
@@ -95,7 +90,7 @@ namespace
 	{
 		size_t out_len;
 		void* cdata = tinfl_decompress_mem_to_heap(backup_client_db_z, backup_client_db_z_len, &out_len, TINFL_FLAG_PARSE_ZLIB_HEADER|TINFL_FLAG_COMPUTE_ADLER32);
-		if (cdata == nullptr)
+		if (cdata == NULL)
 		{
 			return std::string();
 		}
@@ -110,12 +105,11 @@ namespace
 PLUGIN_ID filesrv_pluginid;
 IFSImageFactory *image_fak;
 ICryptoFactory *crypto_fak;
-IBtrfsFactory* btrfs_fak;
-IClouddriveFactory* clouddrive_fak;
 std::string server_identity;
 std::string server_token;
 
 const unsigned short default_urbackup_serviceport=35623;
+const unsigned short default_sambaredir_port = 35624;
 
 void init_mutex1(void);
 bool testEscape(void);
@@ -124,8 +118,6 @@ void restore_wizard(void);
 void upgrade(void);
 bool upgrade_client(void);
 void parse_devnum_test();
-
-#define ADD_ACTION(x) Server->AddAction( new Actions::x );
 
 std::string lang="en";
 std::string time_format_str_de="%d.%m.%Y %H:%M";
@@ -141,11 +133,11 @@ const std::string pw_change_file="urbackup/pw_change.txt";
 const std::string new_file="urbackup/new.txt";
 #endif
 
+THREADPOOL_TICKET indexthread_ticket;
+THREADPOOL_TICKET internetclient_ticket;
+
 namespace
 {
-	THREADPOOL_TICKET indexthread_ticket;
-	std::vector<THREADPOOL_TICKET> internetclient_tickets;
-
 	int64 roundUp(int64 numToRound, int64 multiple)
 	{
 		return ((numToRound + multiple - 1) / multiple) * multiple;
@@ -173,8 +165,8 @@ namespace
 
 	void do_print_dm_file_extents(const std::string& fn)
 	{
-		std::unique_ptr<IFsFile> f(Server->openFile(fn, MODE_READ));
-		if (f.get() == nullptr)
+		std::auto_ptr<IFsFile> f(Server->openFile(fn, MODE_READ));
+		if (f.get() == NULL)
 		{
 			std::cerr << "Error opening file " << fn << " " << os_last_error_str() << std::endl;
 			exit(1);
@@ -321,27 +313,15 @@ DLLEXPORT void LoadActions(IServer* pServer)
 
 	str_map params;
 	crypto_fak = (ICryptoFactory *)Server->getPlugin(Server->getThreadID(), Server->StartPlugin("cryptoplugin", params));
-	if (crypto_fak == nullptr)
+	if (crypto_fak == NULL)
 	{
-		Server->Log("Error loading cryptoplugin", LL_ERROR);
-	}
-
-	btrfs_fak = reinterpret_cast<IBtrfsFactory*>(Server->getPlugin(Server->getThreadID(), Server->StartPlugin("btrfsplugin", params)));
-	if (btrfs_fak == nullptr)
-	{
-		Server->Log("Error loading btrfsplugin", LL_ERROR);
-	}
-
-	clouddrive_fak = reinterpret_cast<IClouddriveFactory*>(Server->getPlugin(Server->getThreadID(), Server->StartPlugin("clouddriveplugin", params)));
-	if (clouddrive_fak == nullptr)
-	{
-		Server->Log("Error loading clouddriveplugin", LL_ERROR);
+		Server->Log("Error loading Cryptoplugin", LL_ERROR);
 	}
 
 	{
 		str_map params;
 		image_fak = (IFSImageFactory *)Server->getPlugin(Server->getThreadID(), Server->StartPlugin("fsimageplugin", params));
-		if (image_fak == nullptr)
+		if (image_fak == NULL)
 		{
 			Server->Log("Error loading fsimageplugin", LL_ERROR);
 		}
@@ -361,55 +341,6 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	{
 		restore_wizard();
 		exit(10);
-		return;
-	}
-
-	if (Server->getServerParameter("restore_http") == "true")
-	{
-		ADD_ACTION(status);
-		ADD_ACTION(login);
-		ADD_ACTION(get_clientnames);
-		ADD_ACTION(get_backupimages);
-		ADD_ACTION(start_download);
-		ADD_ACTION(download_progress);
-		ADD_ACTION(has_network_device);
-		ADD_ACTION(ping_server);
-		ADD_ACTION(has_internet_connection);
-		ADD_ACTION(configure_server);
-		ADD_ACTION(get_disks);
-		ADD_ACTION(get_is_disk_mbr);
-		ADD_ACTION(write_mbr);
-		ADD_ACTION(get_partition);
-		ADD_ACTION(restart);
-		ADD_ACTION(get_keyboard_layouts);
-		ADD_ACTION(set_keyboard_layout);
-		ADD_ACTION(get_connection_settings);
-		ADD_ACTION(get_spill_disks);
-		ADD_ACTION(test_spill_disks);
-		ADD_ACTION(setup_spill_disks);
-		ADD_ACTION(cleanup_spill_disks);
-		ADD_ACTION(resize_disk);
-		ADD_ACTION(restore_finished);
-		ADD_ACTION(resize_part);
-		ADD_ACTION(capabilities);
-		ADD_ACTION(get_tmpfn);
-		ADD_ACTION(get_timezone_data);
-		ADD_ACTION(get_timezone_areas);
-		ADD_ACTION(get_timezone_cities);
-		ADD_ACTION(set_timezone);
-		Server->Log("Started UrBackup Restore HTTP backend...", LL_INFO);
-		return;
-	}
-
-	if (!Server->getServerParameter("mount").empty())
-	{
-		str_map secret_params;
-		ParseParamStrHttp(Server->getServerParameter("mount_secret_params"), &secret_params);
-		bool ret = FilesystemManager::mountFileSystem(Server->getServerParameter("mount"),
-			Server->getServerParameter("mount_params"), secret_params,
-			Server->getServerParameter("mount_path"));
-
-		exit(ret ? 1 : 0);
 		return;
 	}
 
@@ -490,7 +421,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 
 	if( !FileExists("urbackup/data/settings.cfg") && FileExists(INITIAL_SETTINGS_PREFIX "initial_settings.cfg") )
 	{
-		std::unique_ptr<ISettingsReader> settings_reader(Server->createFileSettingsReader(INITIAL_SETTINGS_PREFIX "initial_settings.cfg"));
+		std::auto_ptr<ISettingsReader> settings_reader(Server->createFileSettingsReader(INITIAL_SETTINGS_PREFIX "initial_settings.cfg"));
 		std::string access_keys;
 		std::string client_access_keys;
 		if (settings_reader->getValue("access_keys", &access_keys) && !access_keys.empty())
@@ -548,33 +479,21 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		Server->deleteFile(INITIAL_SETTINGS_PREFIX "initial_settings.cfg");
 	}
 
-	std::vector<SFile> data_dirs = getFiles("urbackup");
-
 #ifndef _DEBUG
-	for (SFile dir : data_dirs)
+	if(FileExists("urbackup/data/settings.cfg"))
 	{
-		if (dir.isdir
-			&& next(dir.name, 0, "data"))
-		{
-			if (FileExists("urbackup/"+dir.name+"/settings.cfg"))
-			{
-				change_file_permissions_admin_only("urbackup/data/settings.cfg");
-			}
-
-			if (FileExists("urbackup/"+dir.name+"/filelist.ub"))
-			{
-				change_file_permissions_admin_only("urbackup/data/filelist.ub");
-			}
-
-			change_file_permissions_admin_only("urbackup/"+dir.name);
-		}
+		change_file_permissions_admin_only("urbackup/data/settings.cfg");
 	}
-#endif
 
-#ifndef _DEBUG
+	if(FileExists("urbackup/data/filelist.ub"))
+	{
+		change_file_permissions_admin_only("urbackup/data/filelist.ub");
+	}
+
 #ifdef _WIN32
 	change_file_permissions_admin_only("urbackup");
 #endif
+	change_file_permissions_admin_only("urbackup/data");
 
 	if(FileExists("debug.log"))
 	{
@@ -612,16 +531,19 @@ DLLEXPORT void LoadActions(IServer* pServer)
 
 	Server->StartCustomStreamService(new ClientService(), "urbackupserver", urbackup_serviceport, -1, serviceport_bind_target);
 
-	internetclient_tickets=InternetClient::start(do_leak_check);
+	unsigned short sambaredir_port = default_sambaredir_port;
+	if (!Server->getServerParameter("smabaredir_port").empty())
+	{
+		sambaredir_port = static_cast<unsigned short>(atoi(Server->getServerParameter("sambaredir_port").c_str()));
+	}
+
+	Server->StartCustomStreamService(new SambaServiceFactory(), "sambaredir", sambaredir_port, -1, IServer::BindTarget_Localhost);
+
+	internetclient_ticket=InternetClient::start(do_leak_check);
 
 #ifdef _WIN32
 	cacheVolumes();
 #endif
-
-	std::thread sm([]() {
-		FilesystemManager::startupMountFileSystems();
-		});
-	sm.detach();
 
 	Server->Log("Started UrBackupClient Backend...", LL_INFO);
 	Server->wait(1000);
@@ -635,7 +557,7 @@ DLLEXPORT void UnloadActions(void)
 		Server->getThreadPool()->waitFor(indexthread_ticket);
 		ServerIdentityMgr::destroy_mutex();
 
-		InternetClient::stop(internetclient_tickets);
+		InternetClient::stop(internetclient_ticket);
 
 		ClientConnector::destroy_mutex();
 
@@ -844,37 +766,21 @@ void update_client26_27(IDatabase* db)
 
 void update_client27_28(IDatabase* db)
 {
-}
-
-void update_client28_29(IDatabase* db)
-{
-	db->Write("CREATE TABLE client_facets (id INTEGER PRIMARY KEY, name TEXT, server_identity TEXT)");
-	db->Write("ALTER TABLE backupdirs ADD facet INTEGER REFERENCES client_facets(id)");
-	db->Write("ALTER TABLE virtual_client_group_offsets ADD facet INTEGER REFERENCES client_facets(id)");
-	db->Write("ALTER TABLE fileaccess_tokens ADD facet INTEGER REFERENCES client_facets(id)");
-	db->Write("INSERT INTO client_facets (name, server_identity) VALUES ('default', '')");
-	int64 fid = db->getLastInsertID();
-	db->Write("UPDATE backupdirs SET facet=" + convert(fid));
-	db->Write("UPDATE virtual_client_group_offsets SET facet=" + convert(fid));
-	db->Write("UPDATE fileaccess_tokens SET facet=" + convert(fid));
-	os_rename_file("data", "data_" + convert(fid));
-	Server->deleteFile("urbackup/session_idents.txt");
-
-	ClientConnector::updateDefaultDirsSetting(db, true, 0, false, static_cast<int>(fid));
+	ClientConnector::updateDefaultDirsSetting(db, true, 0, false);
 }
 
 bool upgrade_client(void)
 {
 	IDatabase *db=Server->getDatabase(Server->getThreadID(), URBACKUPDB_CLIENT);
 	IQuery *q=db->Prepare("SELECT tvalue FROM misc WHERE tkey='db_version'");
-	if(q==nullptr)
+	if(q==NULL)
 		return false;
 	db_results res_v=q->Read();
 	if(res_v.empty())
 		return false;
 	int ver=watoi(res_v[0]["tvalue"]);
 	int old_v;
-	int max_v = 29;
+	int max_v = 28;
 
 	if (ver > max_v)
 	{
@@ -1004,10 +910,6 @@ bool upgrade_client(void)
 				break;
 			case 27:
 				update_client27_28(db);
-				++ver;
-				break;
-			case 28:
-				update_client28_29(db);
 				++ver;
 				break;
 			default:

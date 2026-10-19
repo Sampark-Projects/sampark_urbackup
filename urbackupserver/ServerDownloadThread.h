@@ -142,7 +142,7 @@ class ServerDownloadThread : public IThread, public FileClient::QueueCallback, p
 public:
 	class ActiveDlIds
 	{
-		std::unique_ptr<IMutex> mutex;
+		std::auto_ptr<IMutex> mutex;
 		std::set<size_t> ids;
 	public:
 		ActiveDlIds()

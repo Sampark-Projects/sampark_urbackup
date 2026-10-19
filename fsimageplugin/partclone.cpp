@@ -22,14 +22,14 @@
 #endif
 
 Partclone::Partclone(const std::string& pDev, IFSImageFactory::EReadaheadMode read_ahead, bool background_priority, IFsNextBlockCallback* next_block_callback)
-	: Filesystem(pDev, read_ahead, next_block_callback), bitmap(nullptr)
+	: Filesystem(pDev, read_ahead, next_block_callback), bitmap(NULL)
 {
 	init();
 	initReadahead(read_ahead, background_priority);
 }
 
 Partclone::Partclone(IFile* pDev, IFSImageFactory::EReadaheadMode read_ahead, bool background_priority, IFsNextBlockCallback* next_block_callback)
-	:Filesystem(pDev, next_block_callback), bitmap(nullptr)
+	:Filesystem(pDev, next_block_callback), bitmap(NULL)
 {
 	init();
 	initReadahead(read_ahead, background_priority);
@@ -155,15 +155,15 @@ void Partclone::init()
 	Server->Log("Detected fs type "+fstype);
 
 	if(fstype!="ext2" && fstype!="ext3"
-		&& fstype!="ext4" && fstype!="xfs")
+		&& fstype!="ext4" && fstype!="xfs" && fstype!="btrfs")
 	{
-		Server->Log("Fs type not supported");
+		Server->Log("Fs type not supported: "+fstype);
 		has_error = true;
 		return;
 	}
 
 	cmd = "partclone."+fstype+" -o - -c -s \"" + dev->getFilename() + "\"";
-	FILE* in = nullptr;
+	FILE* in = NULL;
 #ifdef __ANDROID__
 	POFILE* pin = NULL;
 #endif
@@ -178,7 +178,7 @@ void Partclone::init()
 	in = _popen(cmd.c_str(), "r");
 #endif
 
-	if (in == nullptr)
+	if (in == NULL)
 	{
 		has_error = true;
 		return;
@@ -250,7 +250,7 @@ void Partclone::init()
 		return;
 	}
 
-	curr_crc = mz_crc32(mz_crc32(0, nullptr, 0), bitmap, bitmap_bytes);
+	curr_crc = mz_crc32(mz_crc32(0, NULL, 0), bitmap, bitmap_bytes);
 	curr_crc = ~curr_crc;
 
 	if (curr_crc != bitmap_crc)

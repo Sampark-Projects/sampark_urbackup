@@ -15,7 +15,7 @@ struct SFile
 		usn(0), created(0), accessed(0),
 		isdir(false), issym(false),
 		isspecialf(false), isencrypted(false),
-		nlinks(0)
+		isdataless(false), nlinks(0)
 	{
 
 	}
@@ -30,6 +30,7 @@ struct SFile
 	bool issym;
 	bool isspecialf;
 	bool isencrypted;
+	bool isdataless;
 	size_t nlinks;
 
 	bool operator<(const SFile &other) const
@@ -107,6 +108,8 @@ std::string os_strftime(std::string fs);
 bool os_create_dir_recursive(std::string fn);
 
 std::string os_get_final_path(std::string path);
+
+std::string os_get_final_path_str(const std::string& path);
 
 bool os_rename_file(std::string src, std::string dst, void* transaction=NULL);
 

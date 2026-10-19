@@ -248,6 +248,11 @@ void CompressedPipe2::ProcessToString(std::string* ret, bool fromLast )
 	} while (input_buffer_size!=0);
 }
 
+bool CompressedPipe2::setOption(const SocketOption opt)
+{
+	return cs->setOption(opt);
+}
+
 bool CompressedPipe2::Write(const char *buffer, size_t bsize, int timeoutms, bool flush)
 {
 	IScopedLock lock(write_mutex.get());
@@ -523,4 +528,14 @@ _i64 CompressedPipe2::getRealTransferredBytes()
 	}
 
 	return getUncompressedSentBytes()+getUncompressedReceivedBytes()-encryption_overhead;
+}
+
+void CompressedPipe2::setUsageString(const std::string& str)
+{
+	cs->setUsageString(str);
+}
+
+bool CompressedPipe2::setCompressionSettings(const SCompressionSettings& params)
+{
+	return false;
 }

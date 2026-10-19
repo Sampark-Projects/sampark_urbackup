@@ -1,8 +1,6 @@
 #include "action_header.h"
 #include "../server_settings.h"
 #include "../ClientMain.h"
-#include "../snapshot_helper.h"
-#include "../server.h"
 
 #ifndef NAME_MAX
 #define NAME_MAX _POSIX_NAME_MAX
@@ -168,17 +166,6 @@ namespace
 			}
 #endif
 		}
-		else if (BackupServer::getSnapshotMethod(false) == BackupServer::ESnapshotMethod_Btrfs
-			&& SnapshotHelper::getBackupfolder() != trim(backupfolder))
-		{
-			ret.set("dir_error", true);
-			ret.set("dir_error_ext", "err_btrfs_backupfolder_differs");
-
-			add_stop_show(db, ret, "dir_error_btrfs_backupfolder_differs");
-			ret.set("dir_error_hint", "err_btrfs_backupfolder_differs");
-			ret.set("btrfs_backupfolder", SnapshotHelper::getBackupfolder());
-			ret.set("urbackup_backupfolder", backupfolder);
-		}
 		else
 		{
 			bool has_access_error = false;
@@ -284,7 +271,7 @@ namespace
 
 				std::string test3_path = testfolderpath + os_file_sep() + "CON";
 
-				std::unique_ptr<IFile> test_file(Server->openFile(test3_path, MODE_WRITE));
+				std::auto_ptr<IFile> test_file(Server->openFile(test3_path, MODE_WRITE));
 
 				if (test_file.get() == NULL)
 				{
@@ -340,7 +327,7 @@ namespace
 					tmpfile_path = server_settings->backupfolder + os_file_sep() + "urbackup_tmp_files";
 				}
 
-				std::unique_ptr<IFile> tmp_f(ClientMain::getTemporaryFileRetry(use_tmpfiles, tmpfile_path, logid_t()));
+				std::auto_ptr<IFile> tmp_f(ClientMain::getTemporaryFileRetry(use_tmpfiles, tmpfile_path, logid_t()));
 
 				if (tmp_f.get() == NULL)
 				{
@@ -353,7 +340,9 @@ namespace
 				}
 				else
 				{
-					std::string teststring = base64_decode("WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=");
+					char eicar_str[] = "_DVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=";
+					eicar_str[0] = 'W';
+					const std::string teststring = base64_decode(eicar_str);
 					tmp_f->Write(teststring);
 					std::string tmp_fn = tmp_f->getFilename();
 					tmp_f.reset();
@@ -421,6 +410,20 @@ ACTION_IMPL(status_check)
 		ServerSettings settings(db);
 		access_dir_checks(db, settings, settings.getSettings()->backupfolder,
 			settings.getSettings()->backupfolder_uncompr, ret);
+
+		if (settings.getSettings()->internet_server.empty())
+			ret.set("no_internet_server", true);
+
+		db_results res = db->Read("SELECT name FROM settings_db.si_users LIMIT 1");
+		if (res.empty())
+		{
+			ret.set("no_users", true);
+			ret.set("no_users_stop_show_key", "no_users_warning");
+			if (is_stop_show(db, "no_users_warning"))
+			{
+				ret.set("no_users_show", false);
+			}
+		}
 	}
 	else
 	{

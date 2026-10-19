@@ -43,13 +43,13 @@ const size_t c_header_size = sizeof(headerMagic) + sizeof(headerVersionV1_0) + s
 
 
 CompressedFile::CompressedFile( std::string pFilename, int pMode, size_t n_threads)
-	: error(false), currentPosition(0),
+	: hotCache(NULL), error(false), currentPosition(0),
 	  finished(false), filesize(0), noMagic(false),
 	mutex(Server->createMutex()), n_threads(n_threads), numBlockOffsets(0)
 {
 	uncompressedFile = Server->openFile(pFilename, pMode);
 
-	if(uncompressedFile==nullptr)
+	if(uncompressedFile==NULL)
 	{
 		Server->Log("Could not open compressed file \""+pFilename+"\"", LL_ERROR);
 		error=true;
@@ -68,7 +68,7 @@ CompressedFile::CompressedFile( std::string pFilename, int pMode, size_t n_threa
 		blocksize = c_cacheBuffersize;
 		writeHeader();
 		hotCache.reset(new LRUMemCache(blocksize, c_ncacheItems, n_threads));
-		initCompressedBuffers(n_threads + 1);
+		initCompressedBuffers(n_threads);
 	}
 
 	if(hotCache.get())
@@ -80,9 +80,9 @@ CompressedFile::CompressedFile( std::string pFilename, int pMode, size_t n_threa
 }
 
 CompressedFile::CompressedFile(IFile* file, bool openExisting, bool readOnly, size_t n_threads)
-	: error(false), currentPosition(0),
+	: hotCache(NULL), error(false), currentPosition(0),
 	finished(false), uncompressedFile(file), filesize(0), readOnly(readOnly),
-	noMagic(false), n_threads(n_threads), numBlockOffsets(0)
+	noMagic(false), mutex(Server->createMutex()), n_threads(n_threads), numBlockOffsets(0)
 {
 	if(openExisting)
 	{
@@ -93,9 +93,9 @@ CompressedFile::CompressedFile(IFile* file, bool openExisting, bool readOnly, si
 		blocksize = c_cacheBuffersize;
 		writeHeader();
 		hotCache.reset(new LRUMemCache(blocksize, c_ncacheItems, n_threads));
-		initCompressedBuffers(n_threads + 1);
+		initCompressedBuffers(n_threads);
 	}
-	if(hotCache.get()!=nullptr)
+	if(hotCache.get()!=NULL)
 	{
 		hotCache->setCacheEvictionCallback(this);
 	}
@@ -117,7 +117,7 @@ CompressedFile::~CompressedFile()
 	IScopedLock lock(mutex.get());
 	for (size_t i = 0; i < compressedBuffers.size(); ++i)
 	{
-		assert(compressedBuffers[i] != nullptr);
+		assert(compressedBuffers[i] != NULL);
 		delete[] compressedBuffers[i];
 	}
 }
@@ -225,7 +225,7 @@ _u32 CompressedFile::Read( char* buffer, _u32 bsize, bool *has_error)
 	size_t cacheSize;
 	char* cachePtr = hotCache->get(currentPosition, cacheSize);
 
-	if(cachePtr == nullptr)
+	if(cachePtr == NULL)
 	{
 		if(!fillCache(currentPosition, !readOnly, has_error))
 		{
@@ -234,7 +234,7 @@ _u32 CompressedFile::Read( char* buffer, _u32 bsize, bool *has_error)
 
 		cachePtr = hotCache->get(currentPosition, cacheSize);
 
-		if(cachePtr==nullptr)
+		if(cachePtr==NULL)
 		{
 			return 0;
 		}
@@ -379,7 +379,6 @@ bool CompressedFile::fillCache( __int64 offset, bool errorMsg, bool *has_error)
 #ifndef NO_ZSTD_COMPRESSION
 	else if (mode == mode_zstd)
 	{
-		rdecomp = blocksize;
 		const size_t rc = ZSTD_decompress(buf, blocksize,
 			compressedBuffer.data(), compressedSize);
 
@@ -388,6 +387,7 @@ bool CompressedFile::fillCache( __int64 offset, bool errorMsg, bool *has_error)
 			Server->Log(std::string("Error while decompressing file (zstd). Error code ") + ZSTD_getErrorName(rc), LL_ERROR);
 			return false;
 		}
+		rdecomp = rc;
 	}
 #endif
 	else
@@ -420,7 +420,7 @@ _u32 CompressedFile::Write( const char* buffer, _u32 bsize, bool *has_error)
 	size_t cacheSize;
 	char* cachePtr = hotCache->get(currentPosition, cacheSize);
 
-	if(cachePtr==nullptr)
+	if(cachePtr==NULL)
 	{
 		fillCache(currentPosition, false, has_error);
 	}
@@ -528,6 +528,8 @@ void CompressedFile::evictFromLruCache( const SCacheItem& item )
 	{
 		error=true;
 		Server->Log("Error while writing compressed data to file", LL_ERROR);
+		IScopedLock lock(mutex.get());
+		returnCompressedBuffer(compBuffer, compBufferIdx);
 		return;
 	}
 
@@ -614,27 +616,28 @@ char* CompressedFile::getCompressedBuffer(size_t& compressed_buffer_idx)
 {
 	for (size_t i = 0; i < compressedBuffers.size(); ++i)
 	{
-		if (compressedBuffers[i] != nullptr)
+		if (compressedBuffers[i] != NULL)
 		{
 			compressed_buffer_idx = i;
 			char* ret = compressedBuffers[i];
-			compressedBuffers[i] = nullptr;
+			compressedBuffers[i] = NULL;
 			return ret;
 		}
 	}
 	assert(false);
-	return nullptr;
+	return NULL;
 }
 
 void CompressedFile::returnCompressedBuffer(char* buf, size_t compressed_buffer_idx)
 {
-	assert(compressedBuffers[compressed_buffer_idx] == nullptr);
+	assert(compressedBuffers[compressed_buffer_idx] == NULL);
 	compressedBuffers[compressed_buffer_idx] = buf;
 }
 
 bool CompressedFile::finish()
 {
-	assert(!finished);
+	// TODO: Fix
+	// assert(!finished);
 
 	if(hotCache.get())
 	{
@@ -713,6 +716,58 @@ _u32 CompressedFile::writeToFile(int64 offset, const char* buffer, _u32 bsize)
 	} while (written<bsize);
 
 	return written;
+}
+
+void CompressedFile::resetSparseExtentIter()
+{
+}
+
+IFsFile::SSparseExtent CompressedFile::nextSparseExtent()
+{
+	return SSparseExtent();
+}
+
+bool CompressedFile::Resize(int64 new_size, bool set_sparse)
+{
+	IScopedLock lock(mutex.get());
+	if (new_size > filesize)
+	{
+		const size_t blockIdx = static_cast<size_t>(new_size / blocksize);
+		const size_t currNumBlockOffsets = blockOffsets.size();
+		if (blockOffsets.size() <= blockIdx)
+		{
+			const size_t new_size = (blockIdx + 1) * 2;
+			blockOffsets.resize(new_size);
+			for (size_t i = currNumBlockOffsets; i < new_size; ++i)
+			{
+				blockOffsets[i] = -1;
+			}
+		}
+		filesize = new_size;
+		numBlockOffsets = (std::max)(numBlockOffsets, blockIdx + 1);
+	}
+	return true;
+}
+
+std::vector<IFsFile::SFileExtent> CompressedFile::getFileExtents(int64 starting_offset, int64 block_size, bool& more_data)
+{
+	more_data = false;
+	return std::vector<SFileExtent>();
+}
+
+IVdlVolCache* CompressedFile::createVdlVolCache()
+{
+	return NULL;
+}
+
+int64 CompressedFile::getValidDataLength(IVdlVolCache* vol_cache)
+{
+	return int64();
+}
+
+IFsFile::os_file_handle CompressedFile::getOsHandle(bool release_handle)
+{
+	return os_file_handle();
 }
 
 bool CompressedFile::hasNoMagic()

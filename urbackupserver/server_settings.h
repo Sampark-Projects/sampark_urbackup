@@ -4,6 +4,7 @@
 #include "../Interface/SettingsReader.h"
 #include "../Interface/Database.h"
 #include "../Interface/Mutex.h"
+#include "../urbackupcommon/json.h"
 #include <memory>
 
 namespace
@@ -56,7 +57,6 @@ struct SSettings
 	bool no_file_backups;
 	bool allow_overwrite;
 	bool autoshutdown;
-	bool startup_cleanup;
 	int startup_backup_delay;
 	bool download_client;
 	bool autoupdate_clients;
@@ -82,11 +82,12 @@ struct SSettings
 	bool allow_config_paths;
 	bool allow_log_view;
 	bool allow_tray_exit;
+	bool allow_all_clients_restore;
 	std::string image_letters;
 	bool backup_database;
 	std::string internet_server;
 	bool client_set_settings;
-	unsigned short internet_server_port;
+	std::string internet_server_port;
 	std::string internet_server_proxy;
 	std::string internet_authkey;
 	bool internet_full_file_backups;
@@ -153,12 +154,9 @@ struct SSettings
 	int hash_threads;
 	int client_hash_threads;
 	int image_compress_threads;
-	std::string ransomware_canary_paths;
-	std::string backup_dest_url;
-	std::string backup_dest_params;
-	std::string backup_dest_secret_params;
-	bool pause_if_windows_unlocked;
-	std::string backup_unlocked_window;
+	bool client_rename_detection;
+	int max_running_jobs_per_client_group;
+	int group_id;
 };
 
 struct SLDAPSettings
@@ -258,12 +256,27 @@ public:
 
 	std::string ldapMapToString(const std::map<std::string, std::string>& ldap_map);
 
-	static void createSettingsReaders(IDatabase* db, int clientid, std::unique_ptr<ISettingsReader>& settings_default,
-		std::unique_ptr<ISettingsReader>& settings_client, std::unique_ptr<ISettingsReader>& settings_global, int& settings_default_id);
+	static void createSettingsReaders(IDatabase* db, int clientid, std::auto_ptr<ISettingsReader>& settings_default,
+		std::auto_ptr<ISettingsReader>& settings_client, std::auto_ptr<ISettingsReader>& settings_global, int& settings_default_id);
 
 	std::string getImageFileFormatInt(const std::string& image_file_format);
 
 	static void readStringClientSetting(IDatabase* db, int clientid, const std::string &name, const std::string& merge_sep, std::string *output, bool allow_client_value = true);
+
+
+	struct SClientSetting
+	{
+		SClientSetting()
+			: use(-1)
+		{}
+
+		JSON::Value value;
+		JSON::Value value_client;
+		JSON::Value value_group;
+		int use;
+	};
+
+	static std::map<std::string, SClientSetting> getClientSettings(IDatabase* db, int t_clientid, int group_id = 0, IDatabase* group_db = NULL);
 
 private:
 	void operator=(const ServerSettings& other){};
@@ -293,11 +306,15 @@ private:
 	void readIntClientSetting(IQuery* q_get_client_setting, const std::string &name, int *output, bool allow_client_value = true);
 	void readInt64ClientSetting(IQuery* q_get_client_setting, const std::string &name, int64 *output, bool allow_client_value = true);
 	void readSizeClientSetting(IQuery* q_get_client_setting, const std::string &name, size_t *output, bool allow_client_value = true);
+	void readFloatClientSetting(IQuery* q_get_client_setting, const std::string& name, float* output, bool allow_client_value = true);
 
 	void updateInternal(bool* was_updated);
 	std::map<std::string, std::string> parseLdapMap(const std::string& data);
 
 	SSettings* local_settings;
+#ifndef NDEBUG
+	THREAD_ID init_thread_id;
+#endif
 
 	IDatabase* db;
 

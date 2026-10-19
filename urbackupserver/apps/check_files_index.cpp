@@ -60,7 +60,7 @@ int check_files_index()
 
 	IDatabaseCursor* cursor = q_iterate->Cursor();
 
-	std::unique_ptr<FileIndex> fileindex(create_lmdb_files_index());
+	std::auto_ptr<FileIndex> fileindex(create_lmdb_files_index());
 
 	if(!fileindex.get())
 	{

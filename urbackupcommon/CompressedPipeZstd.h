@@ -7,15 +7,15 @@
 #include "CompressedPipe2.h"
 #include <vector>
 #include <memory>
+#define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
 
 class IMutex;
 
-
 class CompressedPipeZstd : public ICompressedPipe
 {
 public:
-	CompressedPipeZstd(IPipe *cs, int compression_level, int threads);
+	CompressedPipeZstd(IPipe *cs, int compression_level);
 	~CompressedPipeZstd(void);
 
 	virtual size_t Read(char *buffer, size_t bsize, int timeoutms=-1);
@@ -56,19 +56,43 @@ public:
 
 	virtual _i64 getRealTransferredBytes();
 
+	virtual void setUsageString(const std::string& str);
+
+	virtual bool setCompressionSettings(const SCompressionSettings& params);
+
+	virtual bool setOption(const SocketOption opt);
+
 private:
+	virtual bool WriteInt(const char *buffer, size_t bsize, int timeoutms = -1, ZSTD_EndDirective flush= ZSTD_e_continue);
+
 	size_t ProcessToBuffer(char *buffer, size_t bsize, bool fromLast);
 	void ProcessToString(std::string* ret, bool fromLast);
 
 	IPipe *cs;
-	std::vector<char> comp_buffer;
+	char* comp_buffer;
+	size_t comp_buffer_size;
 	std::vector<char> input_buffer;
 	size_t input_buffer_size;
 
+	int compression_level;
 	int64 uncompressed_sent_bytes;
 	int64 uncompressed_received_bytes;
 	int64 sent_flushes;
 	int64 last_send_time;
+
+	struct ZstdAdaptive
+	{
+		int64 flush_timeout;
+		ZSTD_frameProgression zfp_prev;
+		ZSTD_frameProgression zfp_prev_corr;
+		size_t n_zstd_workers;
+		size_t zstd_input_blocked;
+		size_t zstd_input_presented;
+		int comp_level;
+		unsigned int last_job_id;
+	};
+
+	std::auto_ptr<ZstdAdaptive> adaptive;
 
 	bool destroy_cs;
 	bool has_error;
@@ -77,8 +101,12 @@ private:
 	ZSTD_CCtx* def_stream;
 	ZSTD_inBuffer inf_in_last;
 
-	std::unique_ptr<IMutex> read_mutex;
-	std::unique_ptr<IMutex> write_mutex;
+	std::auto_ptr<IMutex> read_mutex;
+	std::auto_ptr<IMutex> write_mutex;
+
+	std::auto_ptr<IMutex> usage_mutex;
+	std::string usage_curr;
+	std::string usage_add;
 };
 
 #endif //NO_ZSTD_COMPRESSION

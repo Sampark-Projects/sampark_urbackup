@@ -17,7 +17,13 @@
 **************************************************************************/
 
 #include "Connector.h"
+#ifdef OS_FUNC_NO_SERVER
 #include "tcpstack.h"
+#else
+#include "../urbackupcommon/fileclient/tcpstack.h"
+#include "../Interface/Server.h"
+#include <memory>
+#endif
 #include "../stringtools.h"
 #include "../urbackupcommon/escape.h"
 #include "../urbackupcommon/os_functions.h"
@@ -177,12 +183,17 @@ std::string Connector::getResponse(const std::string &cmd, const std::string &ar
 		t_args=args;
 
 	CTCPStack tcpstack;
-	tcpstack.Send(p, cmd+"#pw="+pw+t_args);
+#ifdef OS_FUNC_NO_SERVER
+	tcpstack.Send(p, cmd + "#pw=" + pw + t_args);
+#else
+	std::unique_ptr<IPipe> pp(Server->PipeFromSocket(p));
+	tcpstack.Send(pp.get(), cmd+"#pw="+pw+t_args);
+#endif
 
-	char *resp=nullptr;
+	char *resp=NULL;
 	char buffer[1024];
 	size_t packetsize;
-	while(resp==nullptr)
+	while(resp==NULL)
 	{
         int rc=recv(p, buffer, 1024, MSG_NOSIGNAL);
 		
@@ -249,15 +260,13 @@ std::vector<SBackupDir> Connector::getSharedPaths(bool use_change_pw)
 			std::string virtual_client = dir.get("virtual_client", std::string()).asString();
 
 			SBackupDir rdir =
-			{
-				dir["path"].asString(),
-				dir["name"].asString(),
-				dir["id"].asInt(),
-				dir["group"].asInt(),
-				virtual_client,
-				dir["flags"].asString(),
-				dir["server_default"].asInt()
-			};
+				SBackupDir(	dir["path"].asString(),
+					dir["name"].asString(),
+					dir["id"].asInt(),
+					dir["group"].asInt(),
+					virtual_client,
+					dir["flags"].asString(),
+					dir["server_default"].asInt());
 
 			ret.push_back(rdir);
 		}
@@ -272,6 +281,7 @@ std::vector<SBackupDir> Connector::getSharedPaths(bool use_change_pw)
 bool Connector::saveSharedPaths(const std::vector<SBackupDir> &res)
 {
 	std::string args="all_virtual_clients=1&enable_client_paths_use=1";
+	size_t idx = 0;
 	for (size_t i = 0; i<res.size(); ++i)
 	{
 		if (res[i].server_default)
@@ -287,14 +297,16 @@ bool Connector::saveSharedPaths(const std::vector<SBackupDir> &res)
 			name += "/" + res[i].flags;
 		}
 
-		args += "dir_" + convert(i) + "=" + path;
-		args += "&dir_" + convert(i) + "_name=" + name;
-		args += "&dir_" + convert(i) + "_group=" + convert(res[i].group);
+		args += "dir_" + convert(idx) + "=" + path;
+		args += "&dir_" + convert(idx) + "_name=" + name;
+		args += "&dir_" + convert(idx) + "_group=" + convert(res[i].group);
 
 		if (!res[i].virtual_client.empty())
 		{
-			args += "&dir_" + convert(i) + "_virtual_client=" + EscapeParamString(res[i].virtual_client);
+			args += "&dir_" + convert(idx) + "_virtual_client=" + EscapeParamString(res[i].virtual_client);
 		}
+
+		++idx;
 	}
 
 	std::string d = getResponse("SAVE BACKUP DIRS", args, true);
@@ -552,7 +564,7 @@ std::string Connector::getFileList( const std::string& path, int* backupid, cons
 		params+="&path="+EscapeParamString(path);
 	}
 
-	if(backupid!=nullptr)
+	if(backupid!=NULL)
 	{
 		params+="&backupid="+convert(*backupid);
 	}

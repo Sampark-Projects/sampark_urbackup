@@ -4,3 +4,4 @@
 *.pool.telefonica.de -1
 *.kabel-badenwuerttemberg.de -1
 *.cablesurf.de -1
+*.adsl.highway.telekom.at -1

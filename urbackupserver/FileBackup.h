@@ -65,7 +65,7 @@ public:
 		return false;
 	}
 private:
-	std::unique_ptr<IMutex> mutex;
+	std::auto_ptr<IMutex> mutex;
 	std::map<std::string, std::string> filepath_corrections;
 };
 
@@ -163,7 +163,7 @@ public:
 	}
 
 private:
-	std::unique_ptr<IMutex> mutex;
+	std::auto_ptr<IMutex> mutex;
 	size_t max_downloaded;
 	size_t max_preprocessed;
 	size_t min_downloaded;
@@ -250,10 +250,6 @@ protected:
 	bool loadWindowsBackupComponentConfigXml(FileClient &fc);
 	bool startPhashDownloadThread(const std::string& async_id);
 	bool stopPhashDownloadThread(const std::string& async_id);
-	bool checkRansomwareCanaries();
-	bool checkRansomwareCanariesInt(const std::string& last_backuppath, const std::string& ransomware_canary_paths);
-	bool checkRansomwareCanariesPath(const std::string& last_backuppath, const std::string& curr_path, const std::vector<std::string> path_components, size_t idx);
-	bool checkRansomwareCanaryFile(const std::string& last_backuppath, const std::string& curr_path, const std::string& fn_prefix);
 
 	int group;
 	bool use_tmpfiles;
@@ -274,8 +270,8 @@ protected:
 	std::vector<THREADPOOL_TICKET> bsh_ticket;
 	std::vector<BackupServerPrepareHash*> bsh_prepare;
 	std::vector<THREADPOOL_TICKET> bsh_prepare_ticket;
-	std::unique_ptr<BackupServerHash> local_hash;
-	std::unique_ptr<BackupServerHash> local_hash2;
+	std::auto_ptr<BackupServerHash> local_hash;
+	std::auto_ptr<BackupServerHash> local_hash2;
 
 	std::string filelist_async_id;
 
@@ -284,15 +280,15 @@ protected:
 
 	std::map<std::string, SContinuousSequence> continuous_sequences;
 
-	std::unique_ptr<FileIndex> fileindex;
+	std::auto_ptr<FileIndex> fileindex;
 
 	bool disk_error;
 
 	int backupid;
 
-    std::unique_ptr<server::FileMetadataDownloadThread> metadata_download_thread;
+    std::auto_ptr<server::FileMetadataDownloadThread> metadata_download_thread;
 	THREADPOOL_TICKET metadata_download_thread_ticket;
-	std::unique_ptr<server::FileMetadataDownloadThread::FileMetadataApplyThread> metadata_apply_thread;
+	std::auto_ptr<server::FileMetadataDownloadThread::FileMetadataApplyThread> metadata_apply_thread;
 	THREADPOOL_TICKET metadata_apply_thread_ticket;
 
 	FilePathCorrections filepath_corrections;
@@ -302,7 +298,7 @@ protected:
 	int64 last_speed_received_bytes;
 	int64 speed_set_time;
 
-	std::unique_ptr<PhashLoad> phash_load;
+	std::auto_ptr<PhashLoad> phash_load;
 	THREADPOOL_TICKET phash_load_ticket;
 
 	MaxFileId max_file_id;

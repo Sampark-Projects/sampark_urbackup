@@ -80,15 +80,17 @@ namespace
 #ifndef HAVE_MNTENT_H
                 return std::string();
 #else
+				char buf[1024];
                 FILE *aFile;
 
                 aFile = setmntent("/proc/mounts", "r");
                 if (aFile == NULL) {
                         return std::string();
                 }
+				struct mntent entbuf;
                 struct mntent *ent;
                 std::string maxmount;
-                while (NULL != (ent = getmntent(aFile)))
+                while (NULL != (ent = getmntent_r(aFile, &entbuf, buf, sizeof(buf))))
                 {
                         if(path.find(ent->mnt_dir)==0 &&
                                 std::string(ent->mnt_dir).size()>maxmount.size())
@@ -327,13 +329,13 @@ IFilesystem *FSImageFactory::createFilesystem(const std::string &pDevOrig, ERead
 	if(pDev.empty())
 	{
 		Server->Log("Error reading device file name from "+pDevOrig+"-dev", LL_ERROR);
-		return nullptr;
+		return NULL;
 	}
 #endif
 
 	IFile *dev = Server->openFile(pDev, MODE_READ_DEVICE);
 
-	if(dev==nullptr)
+	if(dev==NULL)
 	{
 		int last_error;
 #ifdef _WIN32
@@ -342,7 +344,7 @@ IFilesystem *FSImageFactory::createFilesystem(const std::string &pDevOrig, ERead
 		last_error=errno;
 #endif
 		Server->Log("Error opening device file ("+pDev+") Errorcode: "+convert(last_error), LL_ERROR);
-		return nullptr;
+		return NULL;
 	}
 	char buffer[4096];
 	_u32 rc=dev->Read(buffer, 4096);
@@ -355,7 +357,7 @@ IFilesystem *FSImageFactory::createFilesystem(const std::string &pDevOrig, ERead
 		last_error = errno;
 #endif
 		Server->Log("Error reading data from device ("+pDev+"). Errorcode: " + convert(last_error), LL_ERROR);
-		return nullptr;
+		return NULL;
 	}
 
 	Server->destroy(dev);
@@ -474,7 +476,7 @@ IFilesystem *FSImageFactory::createFilesystem(const std::string &pDevOrig, ERead
 			if(fs2->hasError())
 			{
 				delete fs2;
-				return nullptr;
+				return NULL;
 			}
 			PrintInfo(fs2);
 			return fs2;
@@ -506,7 +508,7 @@ IFilesystem *FSImageFactory::createFilesystem(const std::string &pDevOrig, ERead
 			if (fs->hasError())
 			{
 				delete fs;
-				return nullptr;
+				return NULL;
 			}
 		}
 		PrintInfo(fs);
@@ -556,7 +558,7 @@ IVHDFile *FSImageFactory::createVHDFile(const std::string &fn, bool pRead_only, 
 		return NULL;
 #endif
 	}
-	return nullptr;
+	return NULL;
 }
 
 IVHDFile *FSImageFactory::createVHDFile(const std::string &fn, const std::string &parent_fn,
@@ -578,7 +580,7 @@ IVHDFile *FSImageFactory::createVHDFile(const std::string &fn, const std::string
 #endif
 	}
 
-	return nullptr;
+	return NULL;
 }
 
 void FSImageFactory::destroyVHDFile(IVHDFile *vhd)
@@ -629,8 +631,8 @@ std::vector<FSImageFactory::SPartition> FSImageFactory::readPartitions(IFile* de
 {
 	gpt_style = false;
 
-	std::string mbr = dev->Read(0LL, 512, nullptr);
-	std::string gpt_header = dev->Read(512LL, 512, nullptr);
+	std::string mbr = dev->Read(0LL, 512, NULL);
+	std::string gpt_header = dev->Read(512LL, 512, NULL);
 
 	if (next(gpt_header, 0, "EFI PART"))
 	{

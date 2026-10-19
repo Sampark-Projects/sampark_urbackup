@@ -71,8 +71,13 @@ public:
 
 	ISharedMutex* getSingleUseMutex();
 private:
+	void assert_thread_id();
+
 
 	DATABASE_ID database_id;
+#ifndef NDEBUG
+	THREAD_ID db_thread_id;
+#endif
 	
 	bool backup_db(const std::string &pFile, const std::string &pDB, IBackupProgress* progress);
 
@@ -87,8 +92,8 @@ private:
 	ICondition *unlock_cond;
 	ISharedMutex* single_user_mutex;
 
-	std::unique_ptr<IScopedReadLock> transaction_read_lock;
-	std::unique_ptr<IScopedWriteLock> write_lock;
+	std::auto_ptr<IScopedReadLock> transaction_read_lock;
+	std::auto_ptr<IScopedWriteLock> write_lock;
 
 	std::vector<std::pair<std::string,std::string> > attached_dbs;
 	str_map params;

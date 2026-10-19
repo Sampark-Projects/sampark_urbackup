@@ -108,7 +108,7 @@ namespace
 				}
 			}
 
-			std::unique_ptr<IFile> metadata_file(Server->openFile(os_file_prefix(metadata_path), MODE_READ));
+			std::auto_ptr<IFile> metadata_file(Server->openFile(os_file_prefix(metadata_path), MODE_READ));
 
 			if(metadata_file.get()==NULL)
 			{
@@ -309,7 +309,7 @@ namespace
 				fileserv->registerMetadataCallback("clientdl" + convert(i), identity, callback);
 			}
 			
-			fileserv->shareDir("urbackup", "/tmp/mkmergsdfklrzrehmklregmfdkgfdgwretklödf", identity, false);
+			fileserv->shareDir("urbackup", "/tmp/mkmergsdfklrzrehmklregmfdkgfdgwretkldf", identity, false);
 			ClientMain::addShareToCleanup(curr_clientid, SShareCleanup("urbackup", identity, false, false));
 
 

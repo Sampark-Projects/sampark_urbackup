@@ -108,13 +108,9 @@ public:
 
 	static bool findUncompleteImageRef(ServerCleanupDao* cleanupdao, int backupid);
 
-	static bool findIncompleteFileBackupRef(ServerCleanupDao* cleanupdao, int backupid);
-
 	static bool findLockedImageRef(ServerCleanupDao* cleanupdao, int backupid);
 
 	static bool findArchivedImageRef(ServerCleanupDao* cleanupdao, int backupid);
-
-	static bool findArchivedFileBackupRef(ServerCleanupDao* cleanupdao, int backupid);
 
 	CleanupAction getCleanupAction() { return cleanup_action; }
 
@@ -133,8 +129,6 @@ private:
 	void check_symlinks(const ServerCleanupDao::SClientInfo& client_info, const std::string& backupfolder, bool deep_check);
 
 	int max_removable_incr_images(ServerSettings& settings, int backupid, int del_in_stack);
-
-	int max_removable_incr_file_backups(ServerSettings& settings, int backupid, int del_in_stack);
 
 	bool cleanup_one_imagebackup_client(int clientid, int64 minspace, int& imagebid);
 
@@ -168,8 +162,7 @@ private:
 
 	void removeClient(int clientid);
 
-	bool deleteFileBackup(const std::string &backupfolder, int clientid, int backupid, bool force_remove, bool remove_references,
-		int del_incr_in_stack = 0);
+	bool deleteFileBackup(const std::string &backupfolder, int clientid, int backupid, bool force_remove=false);
 
 	void removeFileBackupSql( int backupid );
 
@@ -197,8 +190,6 @@ private:
 
 	static void setClientlistDeletionAllowed(bool b);
 
-	bool delete_local_backup(const std::string& backupfolder, int clientid, int backupid, bool force_remove);
-
 	IDatabase *db;
 
 	static IMutex *mutex;
@@ -216,10 +207,10 @@ private:
 
 	CleanupAction cleanup_action;
 
-	std::unique_ptr<ServerCleanupDao> cleanupdao;
-	std::unique_ptr<ServerBackupDao> backupdao;
-	std::unique_ptr<ServerFilesDao> filesdao;
-	std::unique_ptr<FileIndex> fileindex;
+	std::auto_ptr<ServerCleanupDao> cleanupdao;
+	std::auto_ptr<ServerBackupDao> backupdao;
+	std::auto_ptr<ServerFilesDao> filesdao;
+	std::auto_ptr<FileIndex> fileindex;
 
 	logid_t logid;
 

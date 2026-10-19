@@ -191,8 +191,5 @@
     <ClInclude Include="IPipeFileExt.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
-    <ClInclude Include="IFileMetadataPipe.h">
-      <Filter>Quelldateien</Filter>
-    </ClInclude>
   </ItemGroup>
 </Project>

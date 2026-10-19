@@ -34,7 +34,7 @@ namespace tokens
 		void operator=(const TokenCache& other);
 		TokenCache(const TokenCache& other);
 
-		std::unique_ptr<TokenCacheInt> token_cache;
+		std::auto_ptr<TokenCacheInt> token_cache;
 	};
 
 	enum ETokenRight
@@ -58,6 +58,8 @@ namespace tokens
 	std::vector<std::string> get_user_groups(const std::string& username);
 
 	bool write_token( std::string hostname, bool is_user, std::string accountname, const std::string &token_fn, ClientDAO &dao, const std::string& ext_token=std::string());
+
+	bool write_smb_pw(const std::string& fn, const std::string& accountname, const std::string& data);
 
 	std::string permissions_allow_all();
 

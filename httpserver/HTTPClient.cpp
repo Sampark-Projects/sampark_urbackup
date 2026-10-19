@@ -44,7 +44,7 @@ const int HTTP_STATE_WEBSOCKET = 7;
 
 const int HTTP_MAX_KEEPALIVE=15000;
 
-IMutex *CHTTPClient::share_mutex=nullptr;
+IMutex *CHTTPClient::share_mutex=NULL;
 std::map<std::string, SShareProxy> CHTTPClient::shared_connections;
 extern std::vector<std::string> allowed_urls;
 
@@ -165,7 +165,7 @@ bool CHTTPClient::Run(IRunOtherCallback* run_other)
 				Server->clearPostFiles(tid);
 			}
 			delete request_handler;
-			request_handler=nullptr;
+			request_handler=NULL;
 
 			if(!http_service->getProxyServer().empty() && http_service->getShareProxyConnections()==1)
 			{
@@ -474,7 +474,7 @@ bool CHTTPClient::processRequest(void)
 		{
 			Server->Log("URL not allowed");
 			pipe->Write("HTTP/1.1 403 Not Allowed\r\nContent-Type: text/html\r\nContent-Length: 46\r\n\r\nSorry. You're not allowed to access this file.");
-			request_handler=nullptr;
+			request_handler=NULL;
 			request_ticket=ILLEGAL_THREADPOOL_TICKET;
 			return false;			
 		}
@@ -492,7 +492,7 @@ bool CHTTPClient::processRequest(void)
 			{
 				it->second.notify_pipe->Write((char*)&pipe, sizeof(IPipe*) );
 				request_ticket=it->second.proxy_ticket;
-				request_handler=nullptr;
+				request_handler=NULL;
 				return true;
 			}
 
@@ -502,13 +502,13 @@ bool CHTTPClient::processRequest(void)
 			sp.proxy=new CHTTPProxy(http_method, http_query, http_version, http_content, http_params, pipe, sp.notify_pipe, sp.timeout_pipe);
 			sp.proxy_ticket=Server->getThreadPool()->execute(sp.proxy);
 			request_ticket=sp.proxy_ticket;
-			request_handler=nullptr;
+			request_handler=NULL;
 
 			shared_connections[http_query]=sp;
 		}
 		else
 		{
-			CHTTPProxy *proxy_handler=new CHTTPProxy(http_method, http_query, http_version, http_content, http_params, pipe, nullptr, nullptr);
+			CHTTPProxy *proxy_handler=new CHTTPProxy(http_method, http_query, http_version, http_content, http_params, pipe, NULL, NULL);
 			request_ticket=Server->getThreadPool()->execute(proxy_handler);
 			request_handler=proxy_handler;
 		}
@@ -528,9 +528,10 @@ bool CHTTPClient::processRequest(void)
 		size_t pstart;
 		str_map::iterator upgrade_param = http_params.find("UPGRADE");
 		if (upgrade_param != http_params.end()
-			&& upgrade_param->second == "websocket")
+			&& strlower(upgrade_param->second) == "websocket")
 		{
 			std::string name = getuntil("?", *pl);
+			if (name.empty()) name = *pl;
 			std::string gparams = getafter("?", *pl);
 			CHTTPSocket* socket_handler = new CHTTPSocket(name, gparams, http_params, pipe, endpoint);
 			request_ticket = Server->getThreadPool()->execute(socket_handler, "http websocket");
@@ -576,7 +577,7 @@ bool CHTTPClient::processRequest(void)
 
 		std::string gparams=getafter("?", *pl);
 
-		pl=nullptr;
+		pl=NULL;
 		http_params["REMOTE_ADDR"]=endpoint;
 		CHTTPAction *action_handler=new CHTTPAction(name,context,gparams, http_content, http_params, pipe);
 		request_ticket=Server->getThreadPool()->execute(action_handler, "http dynamic request");
@@ -673,7 +674,7 @@ void CHTTPClient::ParseMultipartData(const std::string &data, const std::string 
 		case 4:
 			if(next(data,i,rboundary)==true)
 			{
-                IFile *memfile=Server->openTemporaryFile();
+                IFile *memfile=Server->openMemoryFile();
 				memfile->Write(data.substr(start,i-start-2) );
 				memfile->Seek(0);
 				Server->addPostFile(pfilekey, name, SPostfile(memfile, filename, contenttype) );

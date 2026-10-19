@@ -6,8 +6,8 @@
 #include "FileWrapper.h"
 #include <Windows.h>
 #include <Subauth.h>
-#include <imdproxy.h>
-#include <imdisk.h>
+#include "../external/imdisk/imdproxy.h"
+#include "../external/imdisk/imdisk.h"
 #include <string>
 #include <algorithm>
 #include <memory>
@@ -224,9 +224,9 @@ namespace
 
 			std::string ext = findextension(img_fn);
 
-			std::unique_ptr<IFile> imgf;
+			std::auto_ptr<IFile> imgf;
 
-			std::unique_ptr<VHDFile> vhdfile;
+			std::auto_ptr<VHDFile> vhdfile;
 			if (ext == "raw")
 			{
 				imgf.reset(Server->openFile(img_fn, MODE_READ));

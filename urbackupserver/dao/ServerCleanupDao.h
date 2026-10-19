@@ -39,12 +39,6 @@ public:
 		std::string path;
 		int done;
 	};
-	struct SFileBackupRef
-	{
-		int id;
-		int complete;
-		int archived;
-	};
 	struct SHistItem
 	{
 		int id;
@@ -102,25 +96,17 @@ public:
 	std::vector<int> getClientsSortImagebackups(void);
 	std::vector<SImageLetter> getFullNumImages(int clientid);
 	std::vector<SImageRef> getImageRefs(int incremental_ref);
-	std::vector<SFileBackupRef> getFileBackupRefsReverse(int backupid);
 	std::vector<SImageRef> getImageRefsReverse(int backupid);
-	std::vector<SFileBackupRef> getFileBackupRefs(int incremental_ref);
 	CondInt getImageClientId(int id);
 	CondInt getFileBackupClientId(int id);
 	CondString getImageClientname(int id);
 	CondString getImagePath(int id);
 	std::vector<SImageLetter> getIncrNumImages(int clientid);
 	int getIncrNumImagesForBackup(int backupid);
-	int getIncrNumFileBackupsForBackup(int backupid);
 	std::vector<int> getFullNumFiles(int clientid);
 	std::vector<int> getIncrNumFiles(int clientid);
 	CondString getClientName(int clientid);
-	CondString getClientPermUid(int clientid);
 	CondString getFileBackupPath(int backupid);
-	CondInt getFileBackupDeletionProtected(int backupid);
-	void resetFileBackupDeletionProtected(int backupid);
-	void resetFileBackupIncrementalRef(int backupid);
-	void setFileBackupDeleteClientPending(int backupid);
 	void removeFileBackup(int backupid);
 	void changeImagePath(const std::string& path, int backupid);
 	SFileBackupInfo getFileBackupInfo(int backupid);
@@ -168,25 +154,17 @@ private:
 	IQuery* q_getClientsSortImagebackups;
 	IQuery* q_getFullNumImages;
 	IQuery* q_getImageRefs;
-	IQuery* q_getFileBackupRefsReverse;
 	IQuery* q_getImageRefsReverse;
-	IQuery* q_getFileBackupRefs;
 	IQuery* q_getImageClientId;
 	IQuery* q_getFileBackupClientId;
 	IQuery* q_getImageClientname;
 	IQuery* q_getImagePath;
 	IQuery* q_getIncrNumImages;
 	IQuery* q_getIncrNumImagesForBackup;
-	IQuery* q_getIncrNumFileBackupsForBackup;
 	IQuery* q_getFullNumFiles;
 	IQuery* q_getIncrNumFiles;
 	IQuery* q_getClientName;
-	IQuery* q_getClientPermUid;
 	IQuery* q_getFileBackupPath;
-	IQuery* q_getFileBackupDeletionProtected;
-	IQuery* q_resetFileBackupDeletionProtected;
-	IQuery* q_resetFileBackupIncrementalRef;
-	IQuery* q_setFileBackupDeleteClientPending;
 	IQuery* q_removeFileBackup;
 	IQuery* q_changeImagePath;
 	IQuery* q_getFileBackupInfo;

@@ -65,6 +65,12 @@ public:
 	virtual _i64 getTransferedBytes(void);
 	virtual void resetTransferedBytes(void);
 
+	virtual void setUsageString(const std::string& str);
+
+	virtual bool setCompressionSettings(const SCompressionSettings& params);
+
+	virtual bool setOption(const SocketOption opt);
+
 private:
 	IPipe *cs;
 

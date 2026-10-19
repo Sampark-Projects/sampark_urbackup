@@ -75,6 +75,14 @@ public:
 		pipe->resetTransferedBytes();
 	}
 
+	virtual void setUsageString(const std::string& str) override;
+	virtual bool setCompressionSettings(const SCompressionSettings& params) override;
+
+	virtual bool setOption(const SocketOption opt) override
+	{
+		return pipe->setOption(opt);
+	}
+
 private:
 
 	bool has_read_mask()
@@ -107,6 +115,6 @@ private:
 	char masking_key[4];
 	bool destroy_pipe;
 
-	std::unique_ptr<IMutex> read_mutex;
-	std::unique_ptr<IMutex> write_mutex;
+	std::auto_ptr<IMutex> read_mutex;
+	std::auto_ptr<IMutex> write_mutex;
 };

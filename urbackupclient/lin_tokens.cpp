@@ -34,6 +34,7 @@ struct TokenCacheInt
 };
 
 TokenCache::TokenCache()
+: token_cache(NULL)
 {
 }
 
@@ -183,7 +184,7 @@ std::vector<std::string> get_local_users()
 	for(size_t i=0;i<users.size();++i)
 	{
 		struct passwd* pw = getpwnam(users[i].c_str());
-                if(pw!=nullptr)
+                if(pw!=NULL)
                 {
         #ifndef __APPLE__
                         static int uid_min = read_val("UID_MIN");
@@ -245,7 +246,7 @@ std::vector<std::string> get_user_groups(const std::string& username)
 	#endif
 	std::string utf8_username = (username).c_str();
 	struct passwd* pw = getpwnam(utf8_username.c_str());
-	if(pw==nullptr)
+	if(pw==NULL)
 	{
 		Server->Log("Error getting passwd structure for user with name \""+ username + "\"", LL_ERROR);
 		return std::vector<std::string>();
@@ -268,7 +269,7 @@ std::vector<std::string> get_user_groups(const std::string& username)
 		for(size_t i=0;i<group_ids.size();++i)
 		{
 			struct group* gr =  getgrgid(group_ids[i]);
-			if(gr==nullptr)
+			if(gr==NULL)
 			{
 				Server->Log("Error getting group name of group id "+convert(group_ids[i])+" while getting groups of user with name \""+username+"\"", LL_ERROR);
 			}
@@ -306,7 +307,7 @@ bool write_token( std::string hostname, bool is_user, std::string accountname, c
 	if(is_user)
 	{
 		struct passwd* pw = getpwnam((accountname).c_str());
-		if(pw!=nullptr)
+		if(pw!=NULL)
 		{
 	#ifndef __APPLE__
 			static int uid_min = read_val("UID_MIN");
@@ -357,7 +358,7 @@ bool write_token( std::string hostname, bool is_user, std::string accountname, c
 	if(is_user)
 	{
 		struct passwd* pw = getpwnam(accountname.c_str());
-		if(pw==nullptr)
+		if(pw==NULL)
 		{
 			Server->Log("Error getting passwd structure for user with name \""+ accountname + "\"", LL_ERROR);
 			close(token_fd);
@@ -374,7 +375,7 @@ bool write_token( std::string hostname, bool is_user, std::string accountname, c
 	else
 	{
 		struct group* gr = getgrnam(accountname.c_str());
-		if(gr==nullptr)
+		if(gr==NULL)
 		{
 			Server->Log("Error getting group structure for group with name \""+ accountname + "\"", LL_ERROR);
 			close(token_fd);
@@ -404,7 +405,7 @@ void read_all_tokens(ClientDAO* dao, TokenCache& token_cache)
 	{
 		struct passwd* pw = getpwnam(users[i].c_str());
 
-		if(pw==nullptr)
+		if(pw==NULL)
 		{
 			Server->Log("Error getting passwd structure for user with name \""+ users[i] + "\"", LL_DEBUG);
 			continue;
@@ -426,7 +427,7 @@ void read_all_tokens(ClientDAO* dao, TokenCache& token_cache)
 	{
 		struct group* gr = getgrnam(groups[i].c_str());
 
-		if(gr==nullptr)
+		if(gr==NULL)
 		{
 			Server->Log("Error getting group structure for group with name \""+ groups[i] + "\"", LL_DEBUG);
 			continue;
@@ -493,7 +494,7 @@ int64 read_token_lazy_cache(TokenCache& token_cache, ClientDAO* dao, bool is_use
 	if(is_user)
 	{
 		struct passwd* pw = getpwuid(uid);
-		if(pw!=nullptr)
+		if(pw!=NULL)
 		{
 			name = pw->pw_name;
 		}
@@ -501,7 +502,7 @@ int64 read_token_lazy_cache(TokenCache& token_cache, ClientDAO* dao, bool is_use
 	else
 	{
 		struct group* grp = getgrgid(uid);
-		if(grp!=nullptr)
+		if(grp!=NULL)
 		{
 			name = grp->gr_name;
 		}
@@ -588,7 +589,7 @@ int64 read_token_lazy_cache(TokenCache& token_cache, ClientDAO* dao, bool is_use
 
 std::string translate_tokens(uid_t uid, gid_t gid, mode_t mode, ClientDAO* dao, ETokenRight right, TokenCache& cache)
 {
-	if(cache.get()==nullptr)
+	if(cache.get()==NULL)
 	{
 		read_all_tokens(dao, cache);
 	}
@@ -668,7 +669,7 @@ std::string translate_tokens(uid_t uid, gid_t gid, mode_t mode, ClientDAO* dao, 
 
 		if( (mode & igrp) == igrp)
 		{
-			int64 tid = read_token_lazy_cache(cache, dao, false, uid);
+			int64 tid = read_token_lazy_cache(cache, dao, false, gid);
 			if(tid==0)
 			{
 				Server->Log("Error getting internal id for group with id "+convert(gid), LL_ERROR);
@@ -706,6 +707,12 @@ std::string accountname_normalize(const std::string& accountname)
 {
 	//TODO: Make this conditional on LDAP being used and LDAP being case-insensitive
 	return accountname;
+}
+
+bool write_smb_pw(const std::string& fn, const std::string& accountname, const std::string& data)
+{
+	//Noop
+	return false;
 }
 
 } //namespace tokens

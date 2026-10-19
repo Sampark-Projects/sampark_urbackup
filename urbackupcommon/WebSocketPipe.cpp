@@ -1,21 +1,3 @@
-/*************************************************************************
-*    UrBackup - Client/Server backup system
-*    Copyright (C) 2020 Martin Raiber
-*
-*    This program is free software: you can redistribute it and/or modify
-*    it under the terms of the GNU Affero General Public License as published by
-*    the Free Software Foundation, either version 3 of the License, or
-*    (at your option) any later version.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-**************************************************************************/
-
 #include "WebSocketPipe.h"
 #include "../Interface/Server.h"
 #include <algorithm>
@@ -171,7 +153,6 @@ bool WebSocketPipe::Write(const char* buffer, size_t bsize, int timeoutms, bool 
 
 		memcpy(new_buf.data(), header, header_pos);
 
-		Server->Log("Masking key: " + convert(*((unsigned int*)masking_key)));
 		for (size_t i = 0; i < bsize; ++i)
 		{
 			size_t j = i % 4;
@@ -474,4 +455,14 @@ size_t WebSocketPipe::consume(char* buffer, size_t bsize, int write_timeoutms, s
 		*consumed_out = consumed;
 
 	return out_off;
+}
+
+void WebSocketPipe::setUsageString(const std::string& str)
+{
+	return pipe->setUsageString(str);
+}
+
+bool WebSocketPipe::setCompressionSettings(const SCompressionSettings& params)
+{
+	return pipe->setCompressionSettings(params);
 }

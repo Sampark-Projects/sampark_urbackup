@@ -928,8 +928,6 @@ bool os_link_symbolic_symlink(const std::string &target, const std::string &lnam
 
 bool os_link_symbolic_junctions_raw(const std::string &target, const std::string &lname, void* transaction)
 {
-	size_t bsize;
-	REPARSE_MOUNTPOINT_DATA_BUFFER* rb;
 	bool ret = false;
 	HANDLE hJunc = INVALID_HANDLE_VALUE;
 	char* buf = NULL;
@@ -964,11 +962,11 @@ bool os_link_symbolic_junctions_raw(const std::string &target, const std::string
 	if(hJunc==INVALID_HANDLE_VALUE)
 		goto cleanup;
 
-	bsize=sizeof(REPARSE_MOUNTPOINT_DATA_BUFFER) + (wtarget.size()+1) * sizeof(wchar_t)+30;
+	size_t bsize=sizeof(REPARSE_MOUNTPOINT_DATA_BUFFER) + (wtarget.size()+1) * sizeof(wchar_t)+30;
 	buf=new char[bsize];
 	memset(buf, 0, bsize);
 
-	rb=(REPARSE_MOUNTPOINT_DATA_BUFFER*)buf;
+	REPARSE_MOUNTPOINT_DATA_BUFFER *rb=(REPARSE_MOUNTPOINT_DATA_BUFFER*)buf;
 	rb->ReparseTag=IO_REPARSE_TAG_MOUNT_POINT;
 	rb->ReparseTargetMaximumLength=(WORD)((wtarget.size()+1)*sizeof(wchar_t));
 	rb->ReparseTargetLength=rb->ReparseTargetMaximumLength-1*sizeof(wchar_t);
@@ -1395,6 +1393,53 @@ std::string os_get_final_path(std::string path)
 #endif
 }
 
+std::string os_get_final_path_str(const std::string& path)
+{
+	if (path.empty())
+		return path;
+
+	std::vector<std::string> toks;
+	Tokenize(path, toks, os_file_sep());
+
+	std::vector<std::string*> finalToks;
+	for (size_t i = 0; i < toks.size(); ++i)
+	{
+		std::string& pathComponent = toks[i];
+
+		if (pathComponent.empty() || pathComponent == ".")
+		{
+			continue;
+		}
+		else if (pathComponent == "..")
+		{
+			if (finalToks.empty())
+				return path;
+
+			finalToks.pop_back();
+			continue;
+		}
+
+		finalToks.push_back(&pathComponent);
+	}
+
+	if (toks.size() == finalToks.size())
+		return path;
+
+	std::string ret;
+
+	if (!finalToks.empty())
+	{
+		ret += *finalToks[0];
+	}
+
+	for (size_t i = 1; i < finalToks.size(); ++i)
+	{
+		ret += os_file_sep() + *finalToks[i];
+	}
+
+	return ret;
+}
+
 bool os_rename_file(std::string src, std::string dst, void* transaction)
 {
 	BOOL rc;
@@ -1767,7 +1812,14 @@ std::string os_format_errcode(int64 errcode)
 bool os_enable_background_priority(SPrioInfo& prio_info)
 {
 #ifdef THREAD_MODE_BACKGROUND_BEGIN
-	return SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) == TRUE;
+	bool b= SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) == TRUE;
+	if (b)
+	{
+		THREAD_POWER_THROTTLING_STATE ps = {};
+		ps.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+		SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &ps, sizeof(ps));
+	}
+	return b;
 #else
 	return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST)==TRUE;
 #endif

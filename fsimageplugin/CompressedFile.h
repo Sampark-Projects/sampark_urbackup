@@ -27,7 +27,7 @@ private:
 	friend class LRUMemCache;
 };
 
-class CompressedFile : public IFile, public ICacheEvictionCallback
+class CompressedFile : public IFsFile, public ICacheEvictionCallback
 {
 public:
 	CompressedFile(std::string pFilename, int pMode, size_t n_threads);
@@ -57,6 +57,14 @@ public:
 
 	bool hasNoMagic();
 
+	void resetSparseExtentIter();
+	SSparseExtent nextSparseExtent();
+	bool Resize(int64 new_size, bool set_sparse);
+	std::vector<SFileExtent> getFileExtents(int64 starting_offset, int64 block_size, bool& more_data);
+	IVdlVolCache* createVdlVolCache();
+	int64 getValidDataLength(IVdlVolCache* vol_cache);
+	os_file_handle getOsHandle(bool release_handle);
+
 private:
 	void readHeader(bool *has_error);
 	void readIndex(bool *has_error);
@@ -85,7 +93,7 @@ private:
 	IFile* uncompressedFile;
 	int64 uncompressedFileSize;
 	
-	std::unique_ptr<LRUMemCache> hotCache;
+	std::auto_ptr<LRUMemCache> hotCache;
 
 	//for reading
 	std::vector<char> compressedBuffer;
@@ -101,7 +109,7 @@ private:
 
 	bool noMagic;
 
-	std::unique_ptr<IMutex> mutex;
+	std::auto_ptr<IMutex> mutex;
 
 	size_t n_threads;
 };

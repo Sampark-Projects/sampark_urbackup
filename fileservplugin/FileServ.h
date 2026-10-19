@@ -73,8 +73,6 @@ public:
 
 	virtual void deregisterScriptPipeFile(const std::string& script_fn);
 
-	virtual IFileMetadataPipe* getFileMetadataPipe();
-
 	size_t incrActiveGeneration();
 
 private:

@@ -196,6 +196,21 @@ void InternetServicePipe::resetTransferedBytes(void)
 	cs->resetTransferedBytes();
 }
 
+void InternetServicePipe::setUsageString(const std::string& str)
+{
+	cs->setUsageString(str);
+}
+
+bool InternetServicePipe::setCompressionSettings(const SCompressionSettings& params)
+{
+	return false;
+}
+
+bool InternetServicePipe::setOption(const SocketOption opt)
+{
+	return cs->setOption(opt);
+}
+
 bool InternetServicePipe::Flush(int timeoutms)
 {
 	return cs->Flush(timeoutms);

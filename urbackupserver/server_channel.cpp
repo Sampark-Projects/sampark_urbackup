@@ -58,14 +58,7 @@ namespace
 	bool needs_login(void)
 	{
 		db_results res=getDatabase()->Read("SELECT count(*) AS c FROM settings_db.si_users");
-		if(watoi(res[0]["c"])>0)
-		{
-			return true;
-		}
-		else
-		{
-			return false;
-		}
+		return res.empty() || res[0]["c"] != "0";
 	}
 
 
@@ -261,10 +254,15 @@ void ServerChannelThread::run()
 	{
 		if(input==NULL)
 		{
-			IPipe *np=client_main->getClientCommandConnection(settings, 10000, &client_addr);
+			bool require_reauth = false;
+			IPipe *np=client_main->getClientCommandConnection(settings, 10000, &client_addr, true, &require_reauth);
 			if(np==NULL)
 			{
-				Server->Log("Connecting Channel to "+clientname+" failed - CONNECT error -55", LL_DEBUG);
+				if (require_reauth)
+				{
+					startReauth();
+				}
+				Server->Log("Connecting Channel to "+clientname+" failed - CONNECT error -55 require_reauth="+convert(require_reauth), LL_DEBUG);
 				Server->wait(10000);
 			}
 			else
@@ -377,7 +375,8 @@ void ServerChannelThread::doExit(void)
 
 std::string ServerChannelThread::processMsg(const std::string &msg)
 {
-	if (msg != "ERR")
+	if (msg != "ERR" &&
+		msg != "ERR REQUIRE ENC")
 	{
 		reauth_tries = 0;
 		next_reauth_time = 0;
@@ -385,18 +384,7 @@ std::string ServerChannelThread::processMsg(const std::string &msg)
 
 	if(msg=="ERR")
 	{
-		if (next_reauth_time == 0
-			|| Server->getTimeMS() > next_reauth_time)
-		{
-			client_main->forceReauthenticate();
-			client_main->sendToPipe("WAKEUP");
-
-			++reauth_tries;
-
-			unsigned int waittime = (std::min)(static_cast<unsigned int>(1000.*pow(2., static_cast<double>(reauth_tries))), (unsigned int)30 * 60 * 1000);
-			waittime = (std::max)((unsigned int)60000, waittime);
-			next_reauth_time = Server->getTimeMS()+waittime;
-		}
+		startReauth();
 		return std::string();
 	}
 	else if(msg=="START BACKUP INCR")
@@ -434,13 +422,6 @@ std::string ServerChannelThread::processMsg(const std::string &msg)
 		str_map params;
 		ParseParamStrHttp(s_params, &params);
 		client_main->setConnectionMetered(params["metered"] == "1");
-	}
-	else if (next(msg, 0, "LOCKED "))
-	{
-		std::string s_params = msg.substr(7);
-		str_map params;
-		ParseParamStrHttp(s_params, &params);
-		client_main->setWindowsLocked(params["locked"] == "1");
 	}
 	else if(next(msg, 0, "LOGIN ") && allow_restore)
 	{
@@ -602,22 +583,6 @@ std::string ServerChannelThread::processMsg(const std::string &msg)
 		ParseParamStrHttp(s_params, &params);
 		STARTUP(params);
 	}
-	else if (next(msg, 0, "BACKUP PERCENT "))
-	{
-		std::string s_params = msg.substr(15);
-		str_map params;
-		ParseParamStrHttp(s_params, &params);
-
-		BACKUP_PERCENT(params);
-	}
-	else if (next(msg, 0, "BACKUP DONE "))
-	{
-		std::string s_params = msg.substr(12);
-		str_map params;
-		ParseParamStrHttp(s_params, &params);
-
-		BACKUP_DONE(params);
-	}
 	else
 	{
 		{
@@ -688,6 +653,14 @@ void ServerChannelThread::LOGIN(str_map& params)
 
 	if(needs_login())
 	{
+		Helper::IpLogin ip_login(client_addr);
+
+		if (helper.rateLimited(client_addr))
+		{
+			tcpstack.Send(input, "err");
+			return;
+		}
+
 		if(session.empty())
 		{
 			session=helper.generateSession("anonymous");
@@ -717,6 +690,7 @@ void ServerChannelThread::LOGIN(str_map& params)
 			helper.getSession()->id=-1;
 			tcpstack.Send(input, "err");
 			logFailedLogin(helper, PARAMS, params["username"], LoginMethod_RestoreCD);
+			helper.addToRateLimit(client_addr);
 		}
 	}
 	else
@@ -883,7 +857,7 @@ void ServerChannelThread::GET_BACKUPIMAGES(const std::string& clientname)
 		q->Reset();
 		for(size_t j=0;j<res2.size();++j)
 		{
-			r+="#|"+convert(img_id_offset+watoi(res2[j]["id"]))+"|"+(res2[j]["timestamp"])+"|"+(res2[j]["backuptime"])+"|"+(res[i]["letter"])+"\n";
+			r+="#|"+convert(img_id_offset+watoi(res2[j]["id"]))+"|"+(res2[j]["timestamp"])+"|"+(res2[j]["backuptime"])+"\n";
 		}
 	}
 	tcpstack.Send(input, r);
@@ -1139,7 +1113,7 @@ void ServerChannelThread::DOWNLOAD_IMAGE(str_map& params)
 		int img_version=watoi(res[0]["version"]);
 		if(params["mbr"]=="true")
 		{
-			std::unique_ptr<IFile> f(Server->openFile(os_file_prefix(res[0]["path"]+".mbr"), MODE_READ));
+			std::auto_ptr<IFile> f(Server->openFile(os_file_prefix(res[0]["path"]+".mbr"), MODE_READ));
 			if(f.get()==NULL)
 			{
 				_i64 r=little_endian(-1);
@@ -1178,6 +1152,12 @@ void ServerChannelThread::DOWNLOAD_IMAGE(str_map& params)
 				return;
 			}
 		}
+		else
+		{
+			IPipe::SCompressionSettings comp_params;
+			comp_params.mem = IPipe::Compression_HighMem;
+			input->setCompressionSettings(comp_params);
+		}
 
 		uint64 offset=0;
 		str_map::iterator it1=params.find("offset");
@@ -1194,6 +1174,10 @@ void ServerChannelThread::DOWNLOAD_IMAGE(str_map& params)
 		if (file_extension == "raw")
 		{
 			vhdfile = image_fak->createVHDFile(res[0]["path"], true, 0, 2 * 1024 * 1024, false, IFSImageFactory::ImageFormat_RawCowFile); 
+		}
+		else if (file_extension == "vhdx" || file_extension == "vhdxz")
+		{
+			vhdfile = image_fak->createVHDFile(res[0]["path"], true, 0, 2 * 1024 * 1024, false, IFSImageFactory::ImageFormat_VHDX);
 		}
 		else
 		{
@@ -1224,10 +1208,25 @@ void ServerChannelThread::DOWNLOAD_IMAGE(str_map& params)
 				&& file_extension!="raw")
 				skip=512*512;
 
-			if (is_disk_mbr(res[0]["path"] + ".mbr"))
+			const bool whole_disk = is_disk_mbr(res[0]["path"] + ".mbr");
+			if (whole_disk)
 				skip = 0;
 
 			_i64 imgsize = (_i64)vhdfile->getSize() - skip;
+
+			if (!whole_disk && imgsize + skip > 2LL * 1024 * 1024 * 1024 * 1024)
+			{
+				// Get size of volume without GPT footer for images > 2TiB
+				bool gpt_style = false;
+				const std::vector<IFSImageFactory::SPartition> parts = image_fak->readPartitions(vhdfile, 0, gpt_style);
+				if (gpt_style && parts.size() == 1
+					&& parts[0].length < imgsize && parts[0].length >= imgsize - 1*1024*1024 - 2*512)
+				{
+					Server->Log("Using volume size " + convert(parts[0].length) + " from GPT (image file size " + convert(imgsize) + ")", LL_INFO);
+					imgsize = parts[0].length;
+				}
+			}
+
 			_i64 r=little_endian(imgsize);
 			if (!input->Write((char*)&r, sizeof(_i64), img_send_timeout))
 			{
@@ -1236,10 +1235,13 @@ void ServerChannelThread::DOWNLOAD_IMAGE(str_map& params)
 				return;
 			}
 			unsigned int blocksize=vhdfile->getBlocksize();
-			char buffer[4096];
+			char buffer_with_offset[4096+sizeof(uint64)];
+			char* buffer = buffer_with_offset + sizeof(uint64);
 			size_t read;
 			uint64 currpos=offset;
 			_i64 currblock=(currpos+skip)%blocksize;
+			const _u32 update_every = 1024 * 1024;
+			uint64 update_pos = currpos;
 
 			/*vhdfile->Read(buffer, 512, read);
 			if(read!=512)
@@ -1302,12 +1304,9 @@ void ServerChannelThread::DOWNLOAD_IMAGE(str_map& params)
 						Server->Log("Error reading from VHD file during restore. "+os_last_error_str(), LL_ERROR);
 					}
 						
-					uint64 currpos_endian = little_endian(currpos);
-					bool b = input->Write((char*)&currpos_endian, sizeof(uint64), img_send_timeout, false);
-					if (b)
-					{
-						b = input->Write(buffer, (_u32)read, img_send_timeout, false);
-					}
+					const uint64 currpos_endian = little_endian(currpos);
+					memcpy(buffer_with_offset, &currpos_endian, sizeof(currpos_endian));
+					bool b = input->Write(buffer_with_offset, static_cast<_u32>(sizeof(currpos_endian) + read), img_send_timeout, false);
 					if(!b)
 					{
 						Server->Log("Writing to output pipe failed processMsg-1", LL_ERROR);
@@ -1321,13 +1320,10 @@ void ServerChannelThread::DOWNLOAD_IMAGE(str_map& params)
 				{
 					if(Server->getTimeMS()-lasttime>30000)
 					{
-						uint64 currpos_endian = little_endian(currpos);
-						bool b = input->Write((char*)&currpos_endian, sizeof(uint64), img_send_timeout, false);
+						const uint64 currpos_endian = little_endian(currpos);
+						memcpy(buffer_with_offset, &currpos_endian, sizeof(currpos_endian));
 						memset(buffer, 0, 4096);
-						if (b)
-						{
-							 b = input->Write(buffer, (_u32)4096, img_send_timeout, true);
-						}
+						bool b = input->Write(buffer_with_offset, static_cast<_u32>(sizeof(currpos_endian)+4096), img_send_timeout, false);
 						if (!b)
 						{
 							Server->Log("Sending keep-alive block failed", LL_DEBUG);
@@ -1341,20 +1337,24 @@ void ServerChannelThread::DOWNLOAD_IMAGE(str_map& params)
 				}					
 				currpos+=read;
 
-				if(Server->getTimeMS()-last_update_time>60000)
+				if(currpos - update_pos > update_every)
 				{
-					last_update_time=Server->getTimeMS();
-					ServerStatus::updateActive();
-
-					if (used_bytes > 0)
+					update_pos = currpos;
+					if (Server->getTimeMS() - last_update_time > 60000)
 					{
-						int pcdone_new = static_cast<int>((used_transferred_bytes * 100) / used_bytes);
-						if (pcdone_new != pcdone)
+						last_update_time = Server->getTimeMS();
+						ServerStatus::updateActive();
+
+						if (used_bytes > 0)
 						{
-							pcdone = pcdone_new;
-							ServerStatus::setProcessPcDone(clientname, restore_process.getStatusId(), pcdone);
+							int pcdone_new = static_cast<int>((used_transferred_bytes * 100) / used_bytes);
+							if (pcdone_new != pcdone)
+							{
+								pcdone = pcdone_new;
+								ServerStatus::setProcessPcDone(clientname, restore_process.getStatusId(), pcdone);
+							}
 						}
-					}					
+					}
 				}
 			}
 			while( is_ok && (_i64)currpos<imgsize);
@@ -1571,6 +1571,10 @@ void ServerChannelThread::DOWNLOAD_FILES_TOKENS(str_map& params)
 		{
 			restore_flags = watoi64(restore_flags_it->second);
 		}
+
+		// Don't allow to ignore permissions when restoring files via tokens
+		restore_flags &= ~restore_flag_ignore_permissions;
+
 		THREADPOOL_TICKET ticket;
 
 		if(!create_clientdl_thread(clientname, clientid, clientid, path_info.full_path, path_info.full_metadata_path, filename, 
@@ -1600,8 +1604,6 @@ void ServerChannelThread::DOWNLOAD_FILES_TOKENS(str_map& params)
 
 void ServerChannelThread::RESTORE_PERCENT( str_map params )
 {
-	ServerStatus::updateActive();
-
 	int64 status_id = watoi64(params["status_id"]);
 	int64 restore_id = watoi64(params["id"]);
 	int pc = watoi(params["pc"]);
@@ -1669,92 +1671,10 @@ void ServerChannelThread::RESTORE_DONE( str_map params )
 
 		ServerLogger::reset(log_id);
 
-		client_main->removeRestore(restore_id);
+		client_main->finishRestore(restore_id);
 		ClientMain::cleanupRestoreShare(clientid, restore_ident.value);
-	}	
-}
-
-void ServerChannelThread::BACKUP_PERCENT(str_map params)
-{
-	ServerStatus::updateActive();
-
-	int64 status_id = watoi64(params["status_id"]);
-	int backupid = watoi(params["id"]);
-	int pc = watoi(params["pc"]);
-	double speed_bpms = atof(params["speed_bpms"].c_str());
-	std::string details = params["details"];
-	int64 total_bytes = watoi64(params["total_bytes"]);
-	int64 done_bytes = watoi64(params["done_bytes"]);
-	int detail_pc = watoi(params["detail_pc"]);
-	int64 eta = watoi(params["eta"]);
-	int64 eta_set_time = Server->getTimeMS() - watoi(params["eta_set_time"]);
-
-	client_main->updateLocalBackupRunning(backupid);
-
-	ServerStatus::setProcessPcDone(clientname, status_id, pc);
-	ServerStatus::setProcessSpeed(clientname, status_id, speed_bpms);
-	ServerStatus::setProcessDoneBytes(clientname, status_id, done_bytes);
-	ServerStatus::setProcessTotalBytes(clientname, status_id, total_bytes);
-	ServerStatus::setProcessEta(clientname, status_id, eta, eta_set_time);
-}
-
-void ServerChannelThread::BACKUP_DONE(str_map params)
-{
-	int64 status_id = watoi64(params["status_id"]);
-	logid_t log_id = std::make_pair(watoi64(params["log_id"]), 0);
-	int backupid = watoi(params["id"]);
-	bool success = params["success"] == "true";
-	int num_issues = watoi(params["issues"]);
-
-	if (!ServerLogger::hasClient(log_id, clientid))
-	{
-		Server->Log("Log doesn't have correct client in BACKUP DONE", LL_ERROR);
-		return;
 	}
-
-	SProcess proc = ServerStatus::getProcess(clientname, status_id);
-
-	if (proc.id == 0)
-	{
-		Server->Log("Backup done process not found", LL_ERROR);
-	}
-
-	if (proc.logid != log_id)
-	{
-		Server->Log("Process doesn't have correct log id in BACKUP DONE", LL_ERROR);
-	}
-
-	if (proc.backupid != backupid)
-	{
-		Server->Log("Process doesn't have correct backup id in BACKUP DONE", LL_ERROR);
-	}
-
-	IDatabase* db = Server->getDatabase(Server->getThreadID(), URBACKUPDB_SERVER);
-	ServerBackupDao backup_dao(db);
-
-	ServerStatus::stopProcess(clientname, status_id);
-		
-	int errors = 0;
-	int warnings = 0;
-	int infos = 0;
-	std::string logdata = ServerLogger::getLogdata(log_id, errors, warnings, infos);
-
-	bool image = proc.action == sa_full_image || proc.action == sa_incr_image;
-	bool incr = proc.action == sa_incr_image || proc.action == sa_incr_file || proc.action == sa_resume_incr_file;
-	bool resumed = proc.action == sa_resume_incr_file || proc.action == sa_resume_full_file;
-
-	backup_dao.saveBackupLog(clientid, errors, warnings, infos, image,
-		incr, resumed, 0);
-
-	backup_dao.saveBackupLogData(db->getLastInsertID(), logdata);
-
-	backup_dao.updateClientLastFileBackup(backupid, num_issues, clientid);
-	backup_dao.updateFileBackupSetComplete(backupid);
 	
-	ServerLogger::reset(log_id);
-
-	client_main->sendToPipe("BACKUP DONE?status_id=" + convert(status_id)
-		+ "&success=" + convert(success ? 1 : 0) + "&should_backoff=0");
 }
 
 void ServerChannelThread::STARTUP(str_map& params)
@@ -1862,6 +1782,22 @@ void ServerChannelThread::timeout_restore_tokens_used()
 		{
 			++it;
 		}
+	}
+}
+
+void ServerChannelThread::startReauth()
+{
+	if (next_reauth_time == 0
+		|| Server->getTimeMS() > next_reauth_time)
+	{
+		client_main->forceReauthenticate();
+		client_main->sendToPipe("WAKEUP");
+
+		++reauth_tries;
+
+		unsigned int waittime = (std::min)(static_cast<unsigned int>(1000. * pow(2., static_cast<double>(reauth_tries))), (unsigned int)30 * 60 * 1000);
+		waittime = (std::max)((unsigned int)60000, waittime);
+		next_reauth_time = Server->getTimeMS() + waittime;
 	}
 }
 

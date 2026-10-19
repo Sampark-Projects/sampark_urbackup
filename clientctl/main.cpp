@@ -88,7 +88,7 @@ int64 getTimeMS()
 	if (clock_gettime(CLOCK_MONOTONIC, &tp) != 0)
 	{
 		timeval tv;
-		gettimeofday(&tv, nullptr);
+		gettimeofday(&tv, NULL);
 		static long start_t = tv.tv_sec;
 		tv.tv_sec -= start_t;
 		return tv.tv_sec * 1000 + tv.tv_usec / 1000;
@@ -685,7 +685,7 @@ int action_browse(std::vector<std::string> args)
 	}
 	else
 	{
-		int* pbackupid = nullptr;
+		int* pbackupid = NULL;
 		int backupid = 0;
 		if(backupid_arg.isSet())
 		{
@@ -794,8 +794,8 @@ int action_start_restore(std::vector<std::string> args)
 	TCLAP::SwitchArg non_blocking_arg("l", "non-blocking",
 		"Do not show restore progress and block till the restore is finished but return immediately after starting it", cmd);
 
-	TCLAP::SwitchArg no_follow_symlinks("s", "no-follow-symlinks",
-		"Do not follow symlinks outside of restored path during restore", cmd);
+	TCLAP::SwitchArg follow_symlinks("f", "follow-symlinks",
+		"Follow symlinks outside of restored path during restore", cmd);
 
 	TCLAP::ValueArg<std::string> virtual_client_arg("v", "virtual-client",
 		"Virtual client name",
@@ -852,7 +852,7 @@ int action_start_restore(std::vector<std::string> args)
 	Connector::EAccessError access_error;
 	std::string restore_info = Connector::startRestore(path_arg.getValue(), backupid, virtual_client_arg.getValue(),
 		path_map, access_error, !no_remove_arg.getValue(), !consider_other_fs_arg.getValue(),
-		!no_follow_symlinks.getValue());
+		follow_symlinks.getValue());
 
 	if(!restore_info.empty())
 	{
@@ -900,6 +900,25 @@ int action_set_settings(std::vector<std::string> args)
 		"New value to set the setting to",
 		false, "setting value", cmd);
 
+	TCLAP::SwitchArg no_merge_arg("n", "no-merge",
+		"Don't merge server and client settings if possible", cmd);
+
+	TCLAP::ValueArg<std::string> server_url_arg("", "server-url",
+		"URL of server to connect to",
+		false, "", "url", cmd);
+
+	TCLAP::ValueArg<std::string> name_arg("", "name",
+		"Client name",
+		false, "", "string", cmd);
+
+	TCLAP::ValueArg<std::string> authkey_arg("", "authkey",
+		"Server authentication key for client",
+		false, "", "string", cmd);
+
+	TCLAP::ValueArg<std::string> proxy_arg("", "proxy",
+		"HTTP CONNECT proxy to use to connect to server",
+		false, "", "url", cmd);
+
 	cmd.parse(args);
 
 	if (key_arg.getValue().size() != value_arg.getValue().size())
@@ -913,13 +932,88 @@ int action_set_settings(std::vector<std::string> args)
 		return 3;
 	}
 
+	str_map arg_settings;
+
+	if (server_url_arg.isSet())
+	{
+		std::vector<std::string> server_urls;
+		Tokenize(server_url_arg.getValue(), server_urls, ";");
+		std::string internet_server;
+		std::string internet_server_port;
+		for (size_t i = 0; i < server_urls.size(); ++i)
+		{
+			std::string server_url = server_urls[i];
+			std::string server_port = "55415";
+
+			if (server_url.find("urbackup://") != 0 &&
+				server_url.find("wss://") != 0 &&
+				server_url.find("ws://") != 0)
+			{
+				std::cerr << "Server URL must start with urbackup://, wss:// or ws://" << std::endl;
+				return 4;
+			}
+
+			if (server_url.find("urbackup://") == 0)
+			{
+				std::string hostname = server_url.substr(11);
+				if (hostname.find(":") != std::string::npos)
+				{
+					server_port = getafter(":", server_url);
+				}
+				server_url = hostname;
+			}
+
+			if (!internet_server.empty())
+				internet_server += ";";
+			if (!internet_server_port.empty())
+				internet_server_port += ";";
+
+			internet_server += server_url;
+			internet_server_port += server_port;
+		}
+
+		arg_settings["internet_server_port"] = internet_server_port;
+		arg_settings["internet_server"] = internet_server;
+		arg_settings["internet_mode_enabled"] = "true";
+	}
+
+	if (authkey_arg.isSet())
+	{
+		arg_settings["internet_authkey"] = authkey_arg.getValue();
+		arg_settings["internet_mode_enabled"] = "true";
+	}
+
+	if (name_arg.isSet())
+	{
+		arg_settings["computername"] = name_arg.getValue();
+	}
+
+	if (proxy_arg.isSet())
+	{
+		arg_settings["internet_server_proxy"] = proxy_arg.getValue();
+		arg_settings["internet_mode_enabled"] = "true";
+	}
+
 	std::string s_settings;
 	for (size_t i = 0; i < key_arg.getValue().size(); ++i)
 	{
-		s_settings += key_arg.getValue()[i] + "=" + value_arg.getValue()[i] + "\n";
+		std::string key = key_arg.getValue()[i];
+		if(arg_settings.find(key)==arg_settings.end())
+			s_settings += key + "=" + value_arg.getValue()[i] + "\n";
 	}
 
-	s_settings += "keep_old_settings=true\n";
+	for (str_map::const_iterator it = arg_settings.begin();
+		it != arg_settings.end(); ++it)
+	{
+		s_settings += it->first + "=" + it->second + "\n";
+	}
+
+	s_settings += "set_client_settings=1\n";
+
+	if (!no_merge_arg.getValue())
+	{
+		s_settings += "merge_client_settings=0\n";
+	}
 
 	bool no_perm;
 	bool b = Connector::updateSettings(s_settings, no_perm);
@@ -1158,6 +1252,17 @@ int action_add_backupdir(std::vector<std::string> args)
 
 	SBackupDir new_dir;
 	new_dir.path = path_arg.getValue();
+
+	if (!os_path_absolute(new_dir.path))
+	{
+		new_dir.path = os_get_final_path(new_dir.path);
+	}
+
+	if (new_dir.path.size()>1 && new_dir.path[new_dir.path.size() - 1] == os_file_sep()[0])
+	{
+		new_dir.path.erase(new_dir.path.size() - 1, 1);
+	}
+
 	if (name_arg.getValue().empty())
 	{
 		new_dir.name = getDefaultDirname(backup_dirs, new_dir.path);
@@ -1413,7 +1518,7 @@ int action_remove_backupdir(std::vector<std::string> args)
 	}
 
 	bool del_ok = false;
-	bool del_server_default = true;
+	bool del_server_default = false;
 
 	for (size_t i = 0; i < backup_dirs.size();)
 	{
@@ -1423,6 +1528,7 @@ int action_remove_backupdir(std::vector<std::string> args)
 			if (backup_dirs[i].server_default)
 			{
 				del_server_default = true;
+				++i;
 			}
 			else
 			{
@@ -1436,6 +1542,7 @@ int action_remove_backupdir(std::vector<std::string> args)
 			if (backup_dirs[i].server_default)
 			{
 				del_server_default = true;
+				++i;
 			}
 			else
 			{

@@ -126,6 +126,10 @@ const unsigned int c_hashsize=32;
 
 bool ImageThread::sendFullImageThread(void)
 {
+	IPipe::SCompressionSettings comp_params;
+	comp_params.mem = IPipe::Compression_HighMem;
+	pipe->setCompressionSettings(comp_params);
+
 	bool has_error=true;
 
 	int save_id=-1;
@@ -133,7 +137,7 @@ bool ImageThread::sendFullImageThread(void)
 
 	int64 last_shadowcopy_update = Server->getTimeMS();
 
-	std::unique_ptr<IFile> hdat_img;
+	std::auto_ptr<IFile> hdat_img;
 	std::string hdat_vol;
 	int r_shadow_id = -1;
 	str_map other_vols;
@@ -191,7 +195,7 @@ bool ImageThread::sendFullImageThread(void)
 					hdat_vol += ":";
 				}
 
-				if (hdat_img.get() != nullptr)
+				if (hdat_img.get() != NULL)
 				{
 					hdat_img->Read(0, reinterpret_cast<char*>(&r_shadow_id), sizeof(r_shadow_id));
 
@@ -206,7 +210,7 @@ bool ImageThread::sendFullImageThread(void)
 		}
 		else
 		{
-			std::unique_ptr<IFilesystem> fs;
+			std::auto_ptr<IFilesystem> fs;
 			FsShutdownHelper shutdown_helper;
 			if(!image_inf->shadowdrive.empty())
 			{
@@ -214,7 +218,7 @@ bool ImageThread::sendFullImageThread(void)
 					IndexThread::backgroundBackupsEnabled(std::string()), image_inf->image_letter, this));
 				shutdown_helper.reset(fs.get());
 			}
-			if(fs.get()==nullptr)
+			if(fs.get()==NULL)
 			{
 				int tloglevel=LL_ERROR;
 				if(image_inf->shadowdrive.empty())
@@ -234,7 +238,7 @@ bool ImageThread::sendFullImageThread(void)
 			int64 blockcnt=fs->calculateUsedSpace()/blocksize;
 			int64 ncurrblocks=0;
 			sha256_ctx shactx;
-			unsigned char *zeroblockbuf=nullptr;
+			unsigned char *zeroblockbuf=NULL;
 			unsigned int vhdblocks=c_vhdblocksize/blocksize;
 			CWData shadow_data;
 			createShadowData(other_vols, shadow_data);
@@ -373,7 +377,7 @@ bool ImageThread::sendFullImageThread(void)
 								clientSend->sendBuffer(cb, 2*sizeof(int64)+c_hashsize, false);
 								notify_cs=true;
 
-								if (hdat_img.get() != nullptr
+								if (hdat_img.get() != NULL
 									&& IndexThread::getShadowId(hdat_vol, hdat_img.get())==r_shadow_id)
 								{
 									hdat_img->Write(sizeof(int) + (j / vhdblocks)*c_hashsize, reinterpret_cast<char*>(dig), c_hashsize);
@@ -510,7 +514,11 @@ void ImageThread::removeShadowCopyThread(int save_id)
 
 bool ImageThread::sendIncrImageThread(void)
 {
-	char *zeroblockbuf=nullptr;
+	IPipe::SCompressionSettings comp_params;
+	comp_params.mem = IPipe::Compression_HighMem;
+	pipe->setCompressionSettings(comp_params);
+
+	char *zeroblockbuf=NULL;
 	std::vector<IFilesystem::IFsBuffer*> blockbufs;
 
 	bool has_error=true;
@@ -522,7 +530,7 @@ bool ImageThread::sendIncrImageThread(void)
 	lastsendtime=Server->getTimeMS();
 	int64 last_shadowcopy_update = Server->getTimeMS();
 
-	std::unique_ptr<IFile> hdat_img;
+	std::auto_ptr<IFile> hdat_img;
 	std::string hdat_vol;
 	int r_shadow_id = -1;
 	str_map other_vols;
@@ -576,7 +584,7 @@ bool ImageThread::sendIncrImageThread(void)
 					hdat_vol += ":";
 				}
 
-				if (hdat_img.get() != nullptr)
+				if (hdat_img.get() != NULL)
 				{
 					hdat_img->Read(0, reinterpret_cast<char*>(&r_shadow_id), sizeof(r_shadow_id));
 
@@ -591,7 +599,7 @@ bool ImageThread::sendIncrImageThread(void)
 		}
 		else
 		{
-			std::unique_ptr<IFilesystem> fs;
+			std::auto_ptr<IFilesystem> fs;
 			FsShutdownHelper shutdown_helper;
 			if (!image_inf->shadowdrive.empty())
 			{
@@ -599,7 +607,7 @@ bool ImageThread::sendIncrImageThread(void)
 					IndexThread::backgroundBackupsEnabled(std::string()), image_inf->image_letter, this));
 				shutdown_helper.reset(fs.get());
 			}
-			if (fs.get() == nullptr)
+			if (fs.get() == NULL)
 			{
 				int tloglevel = LL_ERROR;
 				if (image_inf->shadowdrive.empty())
@@ -615,12 +623,12 @@ bool ImageThread::sendIncrImageThread(void)
 			int64 changed_blocks = 0;
 			int64 unchanged_blocks = 0;
 
-			std::unique_ptr<IReadOnlyBitmap> previous_bitmap;
-			if (bitmapfile != nullptr
-				&& hdat_img.get() != nullptr)
+			std::auto_ptr<IReadOnlyBitmap> previous_bitmap;
+			if (bitmapfile != NULL
+				&& hdat_img.get() != NULL)
 			{
 				previous_bitmap.reset(image_fak->createClientBitmap(bitmapfile));
-				if (previous_bitmap.get() == nullptr
+				if (previous_bitmap.get() == NULL
 					|| previous_bitmap->hasError())
 				{
 					ImageErr("Error opening previous client bitmap", LL_ERROR);
@@ -628,13 +636,13 @@ bool ImageThread::sendIncrImageThread(void)
 					break;
 				}
 			}
-			else if (hdat_img.get() != nullptr)
+			else if (hdat_img.get() != NULL)
 			{
 				Server->Log("Need previous client bitmap for image backup with CBT. Disabling CBT.", LL_ERROR);
 				hdat_img.reset();
 			}
 
-			if (hdat_img.get() != nullptr)
+			if (hdat_img.get() != NULL)
 			{
 				unsigned int blocksize = (unsigned int)fs->getBlocksize();
 				int64 drivesize = fs->getSize();
@@ -746,7 +754,7 @@ bool ImageThread::sendIncrImageThread(void)
 			CWData shadow_data;
 			createShadowData(other_vols, shadow_data);
 
-			if (hdat_img.get() != nullptr
+			if (hdat_img.get() != NULL
 				&& unchanged_blocks>0)
 			{
 				blockcnt = (changed_blocks*c_vhdblocksize) / blocksize;
@@ -888,7 +896,7 @@ bool ImageThread::sendIncrImageThread(void)
 						for (int64 j = i; j < blocks && j < i + blocks_per_vhdblock; ++j)
 						{
 							IFilesystem::IFsBuffer* buf = fs->readBlock(j);
-							if (buf != nullptr)
+							if (buf != NULL)
 							{
 								sha256_update(&shactx, (unsigned char*)buf->getBuf(), blocksize);
 								blockbufs[j - i] = buf;
@@ -901,17 +909,17 @@ bool ImageThread::sendIncrImageThread(void)
 								}
 								sha256_update(&shactx, (unsigned char*)zeroblockbuf, blocksize);
 								mixed = true;
-								blockbufs[j - i] = nullptr;
+								blockbufs[j - i] = NULL;
 							}
 						}
 						if (fs->hasError())
 						{
 							for (size_t i = 0; i < blockbufs.size(); ++i)
 							{
-								if (blockbufs[i] != nullptr)
+								if (blockbufs[i] != NULL)
 								{
 									fs->releaseBuffer(blockbufs[i]);
-									blockbufs[i] = nullptr;
+									blockbufs[i] = NULL;
 								}
 							}
 							std::string oserrmsg;
@@ -922,7 +930,7 @@ bool ImageThread::sendIncrImageThread(void)
 
 						sha256_final(&shactx, digest);
 
-						if (hdat_img.get() != nullptr)
+						if (hdat_img.get() != NULL)
 						{
 							if (IndexThread::getShadowId(hdat_vol, hdat_img.get()) != r_shadow_id)
 							{
@@ -930,7 +938,7 @@ bool ImageThread::sendIncrImageThread(void)
 							}
 						}
 
-						if (hdat_img.get() != nullptr)
+						if (hdat_img.get() != NULL)
 						{
 							hdat_img->Write(sizeof(int) + (i / blocks_per_vhdblock)*c_hashsize, reinterpret_cast<char*>(digest), c_hashsize);
 						}
@@ -942,7 +950,7 @@ bool ImageThread::sendIncrImageThread(void)
 						bool notify_cs=false;
 						for(int64 j=i;j<blocks && j<i+ blocks_per_vhdblock;++j)
 						{
-							if(blockbufs[j-i]!=nullptr)
+							if(blockbufs[j-i]!=NULL)
 							{
 								char* cb=clientSend->getBuffer();
 								memcpy(cb, &j, sizeof(int64) );
@@ -951,7 +959,7 @@ bool ImageThread::sendIncrImageThread(void)
 								notify_cs=true;
 								lastsendtime=Server->getTimeMS();
 								fs->releaseBuffer(blockbufs[j-i]);
-								blockbufs[j-i]=nullptr;
+								blockbufs[j-i]=NULL;
 							}
 						}
 
@@ -993,10 +1001,10 @@ bool ImageThread::sendIncrImageThread(void)
 
 						for(size_t k=0;k<blockbufs.size();++k)
 						{
-							if(blockbufs[k]!=nullptr)
+							if(blockbufs[k]!=NULL)
 							{
 								fs->releaseBuffer(blockbufs[k]);
-								blockbufs[k]=nullptr;
+								blockbufs[k]=NULL;
 							}
 						}
 					}
@@ -1062,7 +1070,7 @@ bool ImageThread::sendIncrImageThread(void)
 	Server->destroy(hashdatafile);
 	Server->deleteFile(hashdatafile_fn);
 
-	if (bitmapfile != nullptr)
+	if (bitmapfile != NULL)
 	{
 		ScopedDeleteFile del_bitmap_file(bitmapfile);
 	}
@@ -1217,8 +1225,8 @@ std::string ImageThread::getFsErrMsg()
 		std::string extra_info;
 		if (!image_inf->shadowdrive.empty())
 		{
-			std::unique_ptr<IFile> dev(Server->openFile(image_inf->shadowdrive, MODE_READ_DEVICE));
-			if (dev.get() == nullptr)
+			std::auto_ptr<IFile> dev(Server->openFile(image_inf->shadowdrive, MODE_READ_DEVICE));
+			if (dev.get() == NULL)
 			{
 				extra_info += ". Shadow copy " + image_inf->shadowdrive + " not present anymore. May have been removed";
 			}

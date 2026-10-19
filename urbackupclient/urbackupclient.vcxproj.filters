@@ -195,40 +195,7 @@
     <ClCompile Include="..\urbackupcommon\WebSocketPipe.cpp">
       <Filter>Quelldateien</Filter>
     </ClCompile>
-    <ClCompile Include="LocalFullFileBackup.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="LocalFileBackup.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="LocalBackup.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="FilesystemManager.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="RansomwareCanary.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="LocalIncrFileBackup.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="..\urbackupserver\treediff\TreeDiff.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="..\urbackupserver\treediff\TreeNode.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="..\urbackupserver\treediff\TreeReader.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="DocanyMount.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="..\urbackupcommon\backup_url_parser.cpp">
-      <Filter>Quelldateien</Filter>
-    </ClCompile>
-    <ClCompile Include="client_restore_http.cpp">
+    <ClCompile Include="SambaService.cpp">
       <Filter>Quelldateien</Filter>
     </ClCompile>
   </ItemGroup>
@@ -395,37 +362,7 @@
     <ClInclude Include="..\urbackupcommon\CompressedPipeZStd.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
-    <ClInclude Include="LocalFileBackup.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="LocalBackup.h">
-      <Filter>Quelldateien</Filter>
-    </ClInclude>
-    <ClInclude Include="FilesystemManager.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="RansomwareCanary.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="LocalIncrFileBackup.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="LocalFullFileBackup.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="DocanyMount.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="..\urbackupcommon\backup_url_parser.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="client_restore_http.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="client_restore.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
-    <ClInclude Include="win_locked.h">
+    <ClInclude Include="SambaService.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
   </ItemGroup>

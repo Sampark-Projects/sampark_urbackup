@@ -31,6 +31,10 @@
 #define DATADIR ""
 #endif
 
+#ifdef HAVE_MALLOC_H
+#include <malloc.h>
+#endif
+
 const std::string cmdline_version = PACKAGE_VERSION;
 
 void show_version()
@@ -93,14 +97,14 @@ void read_config_file(std::string fn, std::vector<std::string>& real_args)
 	}
 
 	bool destroy_server=false;
-	if(Server==nullptr)
+	if(Server==NULL)
 	{
 		Server = new CServer;
 		destroy_server=true;
 	}
 
 	{
-		std::unique_ptr<ISettingsReader> settings(Server->createFileSettingsReader(fn));
+		std::auto_ptr<ISettingsReader> settings(Server->createFileSettingsReader(fn));
 		std::string val;
 		if(settings->getValue("LOGFILE", &val))
 		{
@@ -197,6 +201,24 @@ void read_config_file(std::string fn, std::vector<std::string>& real_args)
 }
 #endif
 
+void tune_glibc_malloc()
+{
+#if defined(HAVE_MALLOC_H) && defined(M_ARENA_MAX)
+	if(getenv("MALLOC_ARENA_MAX") != NULL ||
+		getenv("GLIBC_TUNABLES") != NULL ||
+		getenv("MALLOC_MMAP_THRESHOLD_") != NULL)
+	{
+		return;
+	}
+
+	// Limits memory fragmentation at the cost of performance
+	mallopt(M_ARENA_MAX, 2);
+#if defined(M_MMAP_THRESHOLD)
+	mallopt(M_MMAP_THRESHOLD, 128*1024);
+#endif
+#endif
+}
+
 #ifndef _WIN32
 int restoreclient_main(int argc, char* argv[]);
 #endif
@@ -226,6 +248,8 @@ int main(int argc, char* argv[])
 			return 0;
 		}
 	}
+
+	tune_glibc_malloc();
 
 	if (argc > 0 &&
 		std::string(argv[1]) == "--internal")
@@ -457,21 +481,6 @@ int restoreclient_main(int argc, char* argv[])
 		}
 	}
 
-	if (argc > 0 &&
-		std::string(argv[1]) == "--internal")
-	{
-		std::vector<std::string> real_args;
-
-		real_args.push_back(argv[0]);
-
-		for (size_t i = 2; i < argc; ++i)
-		{
-			real_args.push_back(argv[i]);
-		}
-
-		return run_real_main(real_args);
-	}
-
 	try
 	{
 		TCLAP::CmdLine cmd("Run UrBackup Restore Client", ' ', cmdline_version);
@@ -525,7 +534,6 @@ int restoreclient_main(int argc, char* argv[])
 
 		TCLAP::SwitchArg restore_wizard_arg("e", "restore-wizard", "Start restore wizard");
 		TCLAP::SwitchArg restore_client_arg("n", "restore-client", "Start restore client");
-		TCLAP::SwitchArg restore_http_arg("x", "restore-http", "Start restore http server");
 
 		TCLAP::ValueArg<std::string> ping_server_arg("p", "ping-server",
 			"Ping server to notify it of client",
@@ -558,7 +566,6 @@ int restoreclient_main(int argc, char* argv[])
 		xorArgs.push_back(&restore_image_arg);
 		xorArgs.push_back(&restore_wizard_arg);
 		xorArgs.push_back(&restore_client_arg);
-		xorArgs.push_back(&restore_http_arg);
 		xorArgs.push_back(&ping_server_arg);
 		xorArgs.push_back(&image_download_progress_arg);
 		xorArgs.push_back(&mbr_download_arg);
@@ -651,20 +658,6 @@ int restoreclient_main(int argc, char* argv[])
 			real_args.push_back("--no-server");
 			real_args.push_back("--restore_mode");
 			real_args.push_back("true");
-		}
-		else if (restore_http_arg.isSet())
-		{
-			real_args.push_back("--no-server");
-			real_args.push_back("--restore_http");
-			real_args.push_back("true");
-			real_args.push_back("--http_server");
-			real_args.push_back("true");
-			real_args.push_back("--http_root");
-			real_args.push_back("restorewww");
-#ifndef RESTORE_MODE_DEV
-			real_args.push_back("--http_localhost_only");
-			real_args.push_back("1");
-#endif
 		}
 		else if (ping_server_arg.isSet())
 		{

@@ -5,8 +5,6 @@
 #include "IVHDFile.h"
 
 #include <memory>
-#include <atomic>
-#include <mutex>
 #include <set>
 
 class CompressedFile;
@@ -54,7 +52,7 @@ struct VhdxBatEntry
 };
 #pragma pack()
 
-class VHDXFile : public IVHDFile
+class VHDXFile : public IVHDFile, public IFile
 {
 public:
 
@@ -62,36 +60,42 @@ public:
 	VHDXFile(const std::string& fn, const std::string& parent_fn, bool pRead_only, bool fast_mode = false, bool compress = false, uint64 pDstsize = 0, size_t compress_n_threads = 0);
 	~VHDXFile();
 
-	virtual bool Seek(_i64 offset) override;
-	virtual bool Read(char* buffer, size_t bsize, size_t& read) override;
-	virtual _u32 Write(const char* buffer, _u32 bsize, bool* has_error = NULL) override;
-	virtual bool isOpen(void) override;
-	virtual uint64 getSize(void) override;
-	virtual uint64 usedSize(void) override;
-	virtual std::string getFilename(void) override;
-	virtual bool has_sector(_i64 sector_size = -1) override;
-	virtual bool this_has_sector(_i64 sector_size = -1) override;
-	virtual unsigned int getBlocksize() override;
-	virtual bool finish() override;
-	virtual bool trimUnused(_i64 fs_offset, _i64 trim_blocksize, ITrimCallback* trim_callback) override;
-	virtual bool syncBitmap(_i64 fs_offset) override;
-	virtual bool makeFull(_i64 fs_offset, IVHDWriteCallback* write_callback) override;
-	virtual bool setUnused(_i64 unused_start, _i64 unused_end) override;
-	virtual bool setBackingFileSize(_i64 fsize) override;
+	virtual bool Seek(_i64 offset);
+	virtual bool Read(char* buffer, size_t bsize, size_t& read);
+	virtual _u32 Write(const char* buffer, _u32 bsize, bool* has_error = NULL);
+	virtual bool isOpen(void);
+	virtual uint64 getSize(void);
+	virtual uint64 usedSize(void);
+	virtual std::string getFilename(void);
+	virtual bool has_sector(_i64 sector_size = -1);
+	virtual bool this_has_sector(_i64 sector_size = -1);
+	virtual unsigned int getBlocksize();
+	virtual bool finish();
+	virtual bool trimUnused(_i64 fs_offset, _i64 trim_blocksize, ITrimCallback* trim_callback);
+	virtual bool syncBitmap(_i64 fs_offset);
+	virtual bool makeFull(_i64 fs_offset, IVHDWriteCallback* write_callback);
+	virtual bool setUnused(_i64 unused_start, _i64 unused_end);
+	virtual bool setBackingFileSize(_i64 fsize);
 
-	virtual std::string Read(_u32 tr, bool* has_error = NULL) override;
-	virtual std::string Read(int64 spos, _u32 tr, bool* has_error = NULL) override;
-	virtual _u32 Read(char* buffer, _u32 bsize, bool* has_error = NULL) override;
-	virtual _u32 Read(int64 spos, char* buffer, _u32 bsize, bool* has_error = NULL) override;
-	virtual _u32 Write(const std::string& tw, bool* has_error = NULL) override;
-	virtual _u32 Write(int64 spos, const std::string& tw, bool* has_error = NULL) override;
-	virtual _u32 Write(int64 spos, const char* buffer, _u32 bsiz, bool* has_error = NULL) override;
-	virtual _i64 Size(void) override;
-	virtual _i64 RealSize() override;
-	virtual bool PunchHole(_i64 spos, _i64 size) override;
-	virtual bool Sync() override;
+	virtual std::string Read(_u32 tr, bool* has_error = NULL);
+	virtual std::string Read(int64 spos, _u32 tr, bool* has_error = NULL);
+	virtual _u32 Read(char* buffer, _u32 bsize, bool* has_error = NULL);
+	virtual _u32 Read(int64 spos, char* buffer, _u32 bsize, bool* has_error = NULL);
+	virtual _u32 Write(const std::string& tw, bool* has_error = NULL);
+	virtual _u32 Write(int64 spos, const std::string& tw, bool* has_error = NULL);
+	virtual _u32 Write(int64 spos, const char* buffer, _u32 bsiz, bool* has_error = NULL);
+	virtual _i64 Size(void);
+	virtual _i64 RealSize();
+	virtual bool PunchHole(_i64 spos, _i64 size);
+	virtual bool Sync();
 
 	void getDataWriteGUID(VhdxGUID& g);
+
+	VHDXFile* getParent() {
+		return parent.get();
+	}
+
+	bool isCompressed();
 
 private:
 	bool createNew();
@@ -110,10 +114,15 @@ private:
 
 	struct LogSequence
 	{
+		LogSequence() 
+		 : max_sequence(-1),
+		  fsize(-1),
+		  new_fsize(-1) {}
+
 		std::vector<uint64> entries;
-		int64 max_sequence = -1;
-		int64 fsize = -1;
-		int64 new_fsize = -1;
+		int64 max_sequence;
+		int64 fsize;
+		int64 new_fsize;
 	};
 
 	LogSequence findLogSequence();
@@ -133,6 +142,8 @@ private:
 
 	bool has_block(bool use_parent);
 
+	void check_bat_buf();
+
 	VhdxHeader curr_header;
 	int64 curr_header_pos;
 
@@ -144,39 +155,41 @@ private:
 	std::vector<char> bat_buf;
 	std::set<int64> pending_bat_entries;
 
-	std::unique_ptr<IFsFile> backing_file;
-	IFile* file;
-	std::unique_ptr<CompressedFile> compressed_file;
+	IFsFile* backing_file;
+	std::auto_ptr<IFsFile> backing_file_holder;
+	IFsFile* file;
+	std::auto_ptr<CompressedFile> compressed_file;
 	int64 allocated_size;
-	bool is_open = false;
+	bool is_open;
 	int64 dst_size;
 	int64 flushed_vhdx_size;
-	bool data_write_uuid_updated = false;
+	bool data_write_uuid_updated;
 
-	std::mutex log_mutex;
+	std::auto_ptr<IMutex> log_mutex;
 
 	_u32 sector_size;
 	_u32 physical_sector_size;
 	_u32 block_size;
 
-	std::atomic<int64> next_payload_pos;
+	std::auto_ptr<IMutex> next_payload_mutex;
+	int64 next_payload_pos;
 
 	int64 log_start_pos;
 	int64 log_pos;
-	int64 log_sequence_num = 1;
+	int64 log_sequence_num;
 
-	int64 spos = 0;
+	int64 spos;
 
 	bool fast_mode;
 	bool read_only;
-	bool finished = false;
+	bool finished;
 
-	std::unique_ptr<VHDXFile> parent;
+	std::auto_ptr<VHDXFile> parent;
 	std::string parent_fn;
 
-	std::mutex sector_bitmap_mutex;
+	std::auto_ptr<IMutex> sector_bitmap_mutex;
 	std::map<_u32, std::vector<char> > sector_bitmap_bufs;
 
-	std::mutex pending_sector_bitmaps_mutex;
+	std::auto_ptr<IMutex> pending_sector_bitmaps_mutex;
 	std::set<_u32> pending_sector_bitmaps;
 };

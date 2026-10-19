@@ -54,7 +54,6 @@ extern IServer* Server;
 #include "../cryptoplugin/ICryptoFactory.h"
 #include "../urlplugin/IUrlFactory.h"
 #include "../luaplugin/ILuaInterpreter.h"
-#include "../clouddrive/IClouddriveFactory.h"
 
 #include "database.h"
 #include "actions.h"
@@ -88,6 +87,8 @@ SStartupStatus startup_status;
 #include "Alerts.h"
 #include "Mailer.h"
 #include "../urbackupcommon/settingslist.h"
+#include "../urbackupcommon/settings.h"
+#include "../urbackupcommon/filelist_utils.h"
 
 #include <stdlib.h>
 #include "../Interface/DatabaseCursor.h"
@@ -101,6 +102,7 @@ SStartupStatus startup_status;
 #include "../urbackupcommon/chunk_hasher.h"
 #include "LogReport.h"
 #include "WebSocketConnector.h"
+#include "serverinterface/settings.h"
 
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
 #include "../common/miniz.h"
@@ -127,7 +129,6 @@ namespace
 IPipe *server_exit_pipe=NULL;
 IFSImageFactory *image_fak;
 ICryptoFactory *crypto_fak;
-IClouddriveFactory* clouddrive_fak;
 IUrlFactory *url_fak=NULL;
 IFileServ* fileserv=NULL;
 ILuaInterpreter* lua_interpreter = NULL;
@@ -514,7 +515,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		}
 		else if (app == "hash")
 		{
-			std::unique_ptr<IFsFile> f(Server->openFile(Server->getServerParameter("hash_file"), MODE_READ_SEQUENTIAL));
+			std::auto_ptr<IFsFile> f(Server->openFile(Server->getServerParameter("hash_file"), MODE_READ_SEQUENTIAL));
 			if (f.get() != NULL)
 			{
 				std::string h = BackupServerPrepareHash::calc_hash(f.get(), Server->getServerParameter("hash_method"));
@@ -554,15 +555,6 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		if( crypto_fak==NULL )
 		{
 			Server->Log("Error loading Cryptoplugin. Internet service will not work.", LL_ERROR);
-		}
-	}
-
-	{
-		str_map params;
-		clouddrive_fak = reinterpret_cast<IClouddriveFactory*>(Server->getPlugin(Server->getThreadID(), Server->StartPlugin("clouddriveplugin", params)));
-		if (clouddrive_fak == nullptr)
-		{
-			Server->Log("Error loading clouddriveplugin", LL_ERROR);
 		}
 	}
 
@@ -668,6 +660,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	DataplanDb::init();
 	init_log_report();
 	ServerChannelThread::init_mutex();
+	Helper::init_mutex();
 
 	open_settings_database();
 	
@@ -687,6 +680,60 @@ DLLEXPORT void LoadActions(IServer* pServer)
 		}
 	}
 
+	std::string list_filelist = Server->getServerParameter("list_filelist");
+	if (!list_filelist.empty())
+	{
+		IFile* f = Server->openFile(list_filelist, MODE_READ);
+
+		if (!f)
+		{
+			Server->Log("Error opening filelist at " + list_filelist);
+			exit(2);
+		}
+
+		char buffer[4096];
+		_u32 read;
+
+		FileListParser list_parser;
+	
+		std::string path;
+		SFile cf;
+
+		while ((read = f->Read(buffer, 4096)) > 0)
+		{
+			for (size_t i = 0; i < read; ++i)
+			{				
+				bool b = list_parser.nextEntry(buffer[i], cf, NULL);
+				if (b)
+				{
+					if (cf.isdir)
+					{
+						if (cf.name == "..")
+						{
+							if (path.empty())
+							{
+								Server->Log("Path is empty");
+								exit(1);
+							}
+							path = ExtractFilePath(path);
+						}
+						else
+						{
+							path += os_file_sep() + cf.name;
+							Server->Log("Folder: " + path);
+						}
+					}
+					else
+					{
+						Server->Log("File: " + path + "/"+ cf.name+" Size: " + PrettyPrintBytes(cf.size));
+					}
+				}
+			}
+		}
+
+		exit(0);
+	}
+
 	Server->destroyAllDatabases();
 
 	startup_status.mutex=Server->createMutex();
@@ -696,6 +743,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 	}
 
 	ADD_ACTION(login);
+	ADD_ACTION(oidc_login);
 		
 	upgrade();
 
@@ -762,7 +810,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 
 		std::string new_salt=ServerSettings::generateRandomAuthKey(20);
 
-		const size_t pbkdf2_rounds = 10000;
+		const size_t pbkdf2_rounds = default_pbkdf2_rounds;
 
 		std::string password_md5 = strlower(crypto_fak->generatePasswordHash(hexToBytes(Server->GenerateHexMD5(new_salt+set_admin_pw)),
 				new_salt, pbkdf2_rounds));
@@ -889,7 +937,7 @@ DLLEXPORT void LoadActions(IServer* pServer)
 				port = 55415;
 			}
 
-			std::unique_ptr<ISettingsReader> settings_db(Server->createDBSettingsReader(db, "settings_db.settings",
+			std::auto_ptr<ISettingsReader> settings_db(Server->createDBSettingsReader(db, "settings_db.settings",
 				"SELECT value FROM settings_db.settings WHERE key=? AND clientid=0"));
 
 			std::string port_str = settings_db->getValue("internet_server_bind_port", std::string());
@@ -1508,7 +1556,7 @@ bool upgrade35_36()
 {
 	IDatabase *db=Server->getDatabase(Server->getThreadID(), URBACKUPDB_SERVER);
 
-	std::unique_ptr<IFile> db_file(Server->openFile("urbackup/backup_server.db", MODE_READ));
+	std::auto_ptr<IFile> db_file(Server->openFile("urbackup/backup_server.db", MODE_READ));
 
 	if(db_file.get() && Server->getServerParameter("override_freespace_check")==std::string())
 	{
@@ -2186,6 +2234,10 @@ bool upgrade59_60()
 
 std::string archiveSettingsParamStr(IDatabase* db, int clientid, std::string prefix)
 {
+	db_results res_c = db->Read("SELECT COUNT(*) AS c FROM settings_db.automatic_archival WHERE clientid=" + convert(clientid));
+	if (!res_c.empty() && res_c[0]["c"] == "0")
+		return std::string();
+
 	db_results res = db->Read("SELECT id, interval, interval_unit, length, length_unit, backup_types, clientid, archive_window, letters FROM settings_db.automatic_archival WHERE clientid=" + convert(clientid));
 
 	IQuery* q_set_uuid = db->Prepare("UPDATE settings_db.automatic_archival SET uuid=? WHERE id=?");
@@ -2199,19 +2251,85 @@ std::string archiveSettingsParamStr(IDatabase* db, int clientid, std::string pre
 
 		std::string idx = "_" + prefix + convert(i);
 		if (!ret.empty()) ret += "&";
-		ret += "every"+ idx +"=" + res[i]["interval"];
-		ret += "&every_unit" + idx + "=" + res[i]["interval_unit"];
-		ret += "&for" + idx + "=" + res[i]["interval_unit"];
-		ret += "&for_unit" + idx + "=" + res[i]["interval_unit"];
-		ret += "&backup_types" + idx + "=" + ServerAutomaticArchive::getBackupType(watoi(res[i]["backup_types"]));
-		ret += "&archive_window" + idx + "=" + res[i]["archive_window"];
-		ret += "&letters" + idx + "=" + res[i]["letters"];
+		ret += "every"+ idx +"=" + EscapeParamString(res[i]["interval"]);
+		ret += "&every_unit" + idx + "=" + EscapeParamString(res[i]["interval_unit"]);
+		ret += "&for" + idx + "=" + EscapeParamString(res[i]["length"]);
+		ret += "&for_unit" + idx + "=" + EscapeParamString(res[i]["length_unit"]);
+		ret += "&backup_type" + idx + "=" + EscapeParamString(ServerAutomaticArchive::getBackupType(watoi(res[i]["backup_types"])));
+		ret += "&window" + idx + "=" + EscapeParamString(res[i]["archive_window"]);
+		ret += "&letters" + idx + "=" + EscapeParamString(res[i]["letters"]);
 		ret += "&uuid"+idx+"=" + bytesToHex(uuid);
 
-		q_set_uuid->Bind(uuid);
+		q_set_uuid->Bind(uuid.data(), uuid.size());
 		q_set_uuid->Bind(res[i]["id"]);
 		q_set_uuid->Write();
 		q_set_uuid->Reset();
+	}
+
+	return ret;
+}
+
+std::string fixArchiveMigration(IDatabase* db, const std::string& archive_str)
+{
+	str_map archive_settings;
+	ParseParamStrHttp(archive_str, &archive_settings);
+
+	IQuery* q_find = db->Prepare("SELECT length, length_unit FROM settings_db.automatic_archival WHERE uuid=?");
+
+	for (str_map::iterator it = archive_settings.begin();
+		it != archive_settings.end(); ++it)
+	{
+		if (next(it->first, 0, "backup_types_"))
+		{
+			std::string idx = getafter("backup_types_", it->first);
+
+			str_map::iterator it_for = archive_settings.find("for_" + idx);
+			str_map::iterator it_for_unit = archive_settings.find("for_unit_" + idx);
+			str_map::iterator it_uuid = archive_settings.find("uuid_" + idx);
+			if (it_uuid != archive_settings.end() &&
+				it_for != archive_settings.end() &&
+				it_for_unit != archive_settings.end() &&
+				it_for->second == it_for_unit->second)
+			{
+				std::string uuid = hexToBytes(it_uuid->second);
+				q_find->Bind(uuid.data(), uuid.size());
+				db_results res = q_find->Read();
+				q_find->Reset();
+
+				if (!res.empty())
+				{
+					archive_settings["for_" + idx] = res[0]["length"];
+					archive_settings["for_unit_" + idx] = res[0]["length_unit"];
+				}
+			}
+		}
+	}
+
+	std::string ret;
+	for (str_map::iterator it = archive_settings.begin();
+		it != archive_settings.end(); ++it)
+	{
+		if (!ret.empty())
+			ret += "&";
+
+		if (next(it->first, 0, "backup_types_"))
+		{
+			std::string idx = getafter("backup_types_", it->first);
+
+			if(archive_settings.find("backup_type_" + idx)== archive_settings.end())
+				ret += "backup_type_" + idx + "=" + EscapeParamString(it->second);
+		}
+		else if (next(it->first, 0, "archive_window_"))
+		{
+			std::string idx = getafter("archive_window_", it->first);
+
+			if (archive_settings.find("window_" + idx) == archive_settings.end())
+				ret += "window_" + idx + "=" + EscapeParamString(it->second);
+		}
+		else
+		{
+			ret += it->first + "=" + EscapeParamString(it->second);
+		}
 	}
 
 	return ret;
@@ -2350,33 +2468,63 @@ bool upgrade65_66()
 {
 	IDatabase* db = Server->getDatabase(Server->getThreadID(), URBACKUPDB_SERVER);
 
-	bool b = true;
-	b &= db->Write("ALTER TABLE backups ADD incremental_ref INTEGER");
-	b &= db->Write("ALTER TABLE backups ADD deletion_protected INTEGER");
-	b &= db->Write("ALTER TABLE backups ADD delete_client_pending INTEGER");
-	b &= db->Write("UPDATE backups SET incremental_ref=0");
-	b &= db->Write("UPDATE backups SET deletion_protected=0");
-	b &= db->Write("UPDATE backups SET delete_client_pending=0");
-	b &= db->Write("ALTER TABLE clients ADD perm_uid BLOB");
+	return db->Write(std::string("UPDATE settings_db.settings SET use=") + c_use_value_str + " WHERE key='virtual_clients_add'");
+}
 
-	db_results res_clients = db->Read("SELECT id FROM clients");
+bool upgrade66_67()
+{
+	IDatabase* db = Server->getDatabase(Server->getThreadID(), URBACKUPDB_SERVER);
 
-	IQuery* q_update = db->Prepare("UPDATE clients SET perm_uid=? WHERE id=?");
-	if (q_update == nullptr)
+	return db->Write(std::string("UPDATE settings_db.settings SET use=") + c_use_value_str + " WHERE key='internet_authkey'");
+}
+
+bool upgrade67_68()
+{
+	IDatabase* db = Server->getDatabase(Server->getThreadID(), URBACKUPDB_SERVER);
+
+	db_results res = db->Read("SELECT rowid, value FROM settings_db.settings WHERE key='archive'");
+
+	IQuery* q_update = db->Prepare("UPDATE settings_db.settings SET value=? WHERE rowid=?");
+
+	if (!db->Write("UPDATE settings_db.automatic_archival SET uuid=unhex(hex(uuid))"))
 		return false;
 
-	for (db_single_result res : res_clients)
-	{
-		std::vector<char> uid(16);
-		Server->secureRandomFill(uid.data(), uid.size());
+	bool ret = true;
 
-		q_update->Bind(uid.data(), uid.size());
-		q_update->Bind(res["id"]);
-		b &= q_update->Write();
-		q_update->Reset();
+	for (size_t i = 0; i < res.size(); ++i)
+	{
+		std::string new_res = fixArchiveMigration(db, res[i]["value"]);
+		if (new_res != res[i]["value"])
+		{
+			q_update->Bind(new_res);
+			q_update->Bind(res[i]["rowid"]);
+			ret &= q_update->Write();
+			q_update->Reset();
+		}
+	}	
+
+	IQuery* q_insert_setting = db->Prepare("INSERT INTO settings_db.settings (key, value, clientid, use) VALUES (?, ?, ?, ?)");
+	db_results res_clients = db->Read("SELECT id FROM clients");
+	for (size_t i = 0; i < res_clients.size(); ++i)
+	{
+		const int clientid = watoi(res_clients[i]["id"]);
+
+		q_insert_setting->Bind("archive_update");
+		q_insert_setting->Bind("1");
+		q_insert_setting->Bind(clientid);
+		q_insert_setting->Bind(0);
+		ret &= q_insert_setting->Write();
+		q_insert_setting->Reset();
 	}
 
-	return b;	
+	return true;
+}
+
+bool upgrade68_69()
+{
+	IDatabase* db = Server->getDatabase(Server->getThreadID(), URBACKUPDB_SERVER);
+
+	return updateArchiveSettingsExternal(0, db);
 }
 
 void upgrade(void)
@@ -2400,7 +2548,7 @@ void upgrade(void)
 	
 	int ver=watoi(res_v[0]["tvalue"]);
 	int old_v;
-	int max_v=66;
+	int max_v=69;
 	{
 		IScopedLock lock(startup_status.mutex);
 		startup_status.target_db_version=max_v;
@@ -2801,6 +2949,27 @@ void upgrade(void)
 				break;
 			case 65:
 				if (!upgrade65_66())
+				{
+					has_error = true;
+				}
+				++ver;
+				break;
+			case 66:
+				if (!upgrade66_67())
+				{
+					has_error = true;
+				}
+				++ver;
+				break;
+			case 67:
+				if (!upgrade67_68())
+				{
+					has_error = true;
+				}
+				++ver;
+				break;
+			case 68:
+				if (!upgrade68_69())
 				{
 					has_error = true;
 				}

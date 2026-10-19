@@ -562,16 +562,19 @@ int ServerBackupDao::hasFileBackups(int clientid)
 * @-SQLGenAccess
 * @func void ServerBackupDao::insertSetting
 * @sql
-*      INSERT INTO settings_db.settings (key, value, clientid) VALUES ( :key(string), :value(string), :clientid(int) )
+*      INSERT INTO settings_db.settings (key, value, value_client, use, use_last_modified, clientid) VALUES ( :key(string), :value(string), :value_client(string), :use(int), :use_lm(int64), :clientid(int))
 */
-void ServerBackupDao::insertSetting(const std::string& key, const std::string& value, int clientid)
+void ServerBackupDao::insertSetting(const std::string& key, const std::string& value, const std::string& value_client, int use, int64 use_lm, int clientid)
 {
 	if(q_insertSetting==NULL)
 	{
-		q_insertSetting=db->Prepare("INSERT INTO settings_db.settings (key, value, clientid) VALUES ( ?, ?, ? )", false);
+		q_insertSetting=db->Prepare("INSERT INTO settings_db.settings (key, value, value_client, use, use_last_modified, clientid) VALUES ( ?, ?, ?, ?, ?, ?)", false);
 	}
 	q_insertSetting->Bind(key);
 	q_insertSetting->Bind(value);
+	q_insertSetting->Bind(value_client);
+	q_insertSetting->Bind(use);
+	q_insertSetting->Bind(use_lm);
 	q_insertSetting->Bind(clientid);
 	q_insertSetting->Write();
 	q_insertSetting->Reset();
@@ -594,6 +597,28 @@ void ServerBackupDao::updateSetting(const std::string& value, const std::string&
 	q_updateSetting->Bind(clientid);
 	q_updateSetting->Write();
 	q_updateSetting->Reset();
+}
+
+/**
+* @-SQLGenAccess
+* @func void ServerBackupDao::updateSettingAll
+* @sql
+*      UPDATE settings_db.settings SET value=:value(string), value_client=:value_client(string, use=:use(int), use_last_modified=:use_lm(int64) WHERE key=:key(string) AND clientid=:clientid(int)
+*/
+void ServerBackupDao::updateSettingAll(const std::string& value, const std::string& value_client, int use, int64 use_lm, const std::string& key, int clientid)
+{
+	if(q_updateSettingAll==NULL)
+	{
+		q_updateSettingAll=db->Prepare("UPDATE settings_db.settings SET value=?, value_client=?, use=?, use_last_modified=? WHERE key=? AND clientid=?", false);
+	}
+	q_updateSettingAll->Bind(value);
+	q_updateSettingAll->Bind(value_client);
+	q_updateSettingAll->Bind(use);
+	q_updateSettingAll->Bind(use_lm);
+	q_updateSettingAll->Bind(key);
+	q_updateSettingAll->Bind(clientid);
+	q_updateSettingAll->Write();
+	q_updateSettingAll->Reset();
 }
 
 /**
@@ -678,17 +703,14 @@ void ServerBackupDao::setClientUsedFilebackupSize(int64 bytes_used_files, int id
 * @-SQLGenAccess
 * @func bool ServerBackupDao::newFileBackup
 * @sql
-*       INSERT INTO backups (incremental, clientid, path, complete, running, size_bytes, 
-							done, archived, size_calculated, resumed, indexing_time_ms, tgroup, incremental_ref, deletion_protected,
-							delete_client_pending)
-*		VALUES (:incremental(int), :clientid(int), :path(string), 0, CURRENT_TIMESTAMP, -1, 0, 0, 0, :resumed(int), :indexing_time_ms(int64), :tgroup(int),
-*				:incremental_ref(int), :deletion_protected(int), 0)
+*       INSERT INTO backups (incremental, clientid, path, complete, running, size_bytes, done, archived, size_calculated, resumed, indexing_time_ms, tgroup)
+*		VALUES (:incremental(int), :clientid(int), :path(string), 0, CURRENT_TIMESTAMP, -1, 0, 0, 0, :resumed(int), :indexing_time_ms(int64), :tgroup(int) )
 */
-bool ServerBackupDao::newFileBackup(int incremental, int clientid, const std::string& path, int resumed, int64 indexing_time_ms, int tgroup, int incremental_ref, int deletion_protected)
+bool ServerBackupDao::newFileBackup(int incremental, int clientid, const std::string& path, int resumed, int64 indexing_time_ms, int tgroup)
 {
 	if(q_newFileBackup==NULL)
 	{
-		q_newFileBackup=db->Prepare("INSERT INTO backups (incremental, clientid, path, complete, running, size_bytes,  done, archived, size_calculated, resumed, indexing_time_ms, tgroup, incremental_ref, deletion_protected) VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP, -1, 0, 0, 0, ?, ?, ?, ?, ?)", false);
+		q_newFileBackup=db->Prepare("INSERT INTO backups (incremental, clientid, path, complete, running, size_bytes, done, archived, size_calculated, resumed, indexing_time_ms, tgroup) VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP, -1, 0, 0, 0, ?, ?, ? )", false);
 	}
 	q_newFileBackup->Bind(incremental);
 	q_newFileBackup->Bind(clientid);
@@ -696,8 +718,6 @@ bool ServerBackupDao::newFileBackup(int incremental, int clientid, const std::st
 	q_newFileBackup->Bind(resumed);
 	q_newFileBackup->Bind(indexing_time_ms);
 	q_newFileBackup->Bind(tgroup);
-	q_newFileBackup->Bind(incremental_ref);
-	q_newFileBackup->Bind(deletion_protected);
 	bool ret = q_newFileBackup->Write();
 	q_newFileBackup->Reset();
 	return ret;
@@ -757,22 +777,21 @@ void ServerBackupDao::setFileBackupSynced(int backupid)
 /**
 * @-SQLGenAccess
 * @func SLastIncremental ServerBackupDao::getLastIncrementalFileBackup
-* @return int incremental, string path, int resumed, int complete, int id, int incremental_ref, int deletion_protected
+* @return int incremental, string path, int resumed, int complete, int id
 * @sql
-*       SELECT incremental, path, resumed, complete, id, incremental_ref, deletion_protected
-*		FROM backups WHERE clientid=:clientid(int) AND tgroup=:tgroup(int) AND done=1 ORDER BY backuptime DESC LIMIT 1
+*       SELECT incremental, path, resumed, complete, id FROM backups WHERE clientid=:clientid(int) AND tgroup=:tgroup(int) AND done=1 ORDER BY backuptime DESC LIMIT 1
 */
 ServerBackupDao::SLastIncremental ServerBackupDao::getLastIncrementalFileBackup(int clientid, int tgroup)
 {
 	if(q_getLastIncrementalFileBackup==NULL)
 	{
-		q_getLastIncrementalFileBackup=db->Prepare("SELECT incremental, path, resumed, complete, id, incremental_ref, deletion_protected FROM backups WHERE clientid=? AND tgroup=? AND done=1 ORDER BY backuptime DESC LIMIT 1", false);
+		q_getLastIncrementalFileBackup=db->Prepare("SELECT incremental, path, resumed, complete, id FROM backups WHERE clientid=? AND tgroup=? AND done=1 ORDER BY backuptime DESC LIMIT 1", false);
 	}
 	q_getLastIncrementalFileBackup->Bind(clientid);
 	q_getLastIncrementalFileBackup->Bind(tgroup);
 	db_results res=q_getLastIncrementalFileBackup->Read();
 	q_getLastIncrementalFileBackup->Reset();
-	SLastIncremental ret = { false, 0, "", 0, 0, 0, 0, 0 };
+	SLastIncremental ret = { false, 0, "", 0, 0, 0 };
 	if(!res.empty())
 	{
 		ret.exists=true;
@@ -781,8 +800,6 @@ ServerBackupDao::SLastIncremental ServerBackupDao::getLastIncrementalFileBackup(
 		ret.resumed=watoi(res[0]["resumed"]);
 		ret.complete=watoi(res[0]["complete"]);
 		ret.id=watoi(res[0]["id"]);
-		ret.incremental_ref=watoi(res[0]["incremental_ref"]);
-		ret.deletion_protected=watoi(res[0]["deletion_protected"]);
 	}
 	return ret;
 }
@@ -2056,6 +2073,7 @@ void ServerBackupDao::prepareQueries( void )
 	q_hasFileBackups=NULL;
 	q_insertSetting=NULL;
 	q_updateSetting=NULL;
+	q_updateSettingAll=NULL;
 	q_getMiscValue=NULL;
 	q_addMiscValue=NULL;
 	q_delMiscValue=NULL;
@@ -2148,6 +2166,7 @@ void ServerBackupDao::destroyQueries( void )
 	db->destroyQuery(q_hasFileBackups);
 	db->destroyQuery(q_insertSetting);
 	db->destroyQuery(q_updateSetting);
+	db->destroyQuery(q_updateSettingAll);
 	db->destroyQuery(q_getMiscValue);
 	db->destroyQuery(q_addMiscValue);
 	db->destroyQuery(q_delMiscValue);
@@ -2214,14 +2233,14 @@ void ServerBackupDao::destroyQueries( void )
 }
 
 
-void ServerBackupDao::updateOrInsertSetting( int clientid, const std::string& key, const std::string& value )
+void ServerBackupDao::updateOrInsertSetting( int clientid, const std::string& key, const std::string& value, const std::string& value_client, int use, int64 use_lm)
 {
 	if(getSetting(clientid, key).exists)
 	{
-		updateSetting(value, key, clientid);
+		updateSettingAll(value, value_client, use, use_lm, key, clientid);
 	}
 	else
 	{
-		insertSetting(key, value, clientid);
+		insertSetting(key, value, value_client, use, use_lm, clientid);
 	}
 }

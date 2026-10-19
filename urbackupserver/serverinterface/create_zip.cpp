@@ -31,6 +31,7 @@
 #define _fdopen fdopen
 #define _close close
 #include <unistd.h>
+#include <errno.h>
 #else
 #include <io.h>
 #include <fcntl.h>
@@ -86,7 +87,7 @@ bool my_miniz_init(mz_zip_archive *pZip, MiniZFileInfo* fileInfo)
 
 bool add_dir(mz_zip_archive& zip_archive, const std::string& archivefoldername, const std::string& folderbase, const std::string& foldername, const std::string& start_foldername,
 	    const std::string& hashfolderbase, const std::string& hashfoldername, const std::string& filter,
-		bool token_authentication, const std::vector<backupaccess::SToken> &backup_tokens, const std::vector<std::string> &tokens, bool skip_special, bool orig_skip_special)
+		bool token_authentication, const std::vector<backupaccess::SToken> &backup_tokens, const std::vector<std::string> &tokens, bool skip_special)
 {
 	bool has_error=false;
 	const std::vector<SFile> files = getFiles(os_file_prefix(foldername), &has_error);
@@ -279,9 +280,17 @@ bool add_dir(mz_zip_archive& zip_archive, const std::string& archivefoldername, 
 		}
 		else
 		{	
-			std::unique_ptr<IFsFile> add_file(Server->openFile(os_file_prefix(filename), MODE_READ_SEQUENTIAL));
+			std::auto_ptr<IFsFile> add_file(Server->openFile(os_file_prefix(filename), MODE_READ_SEQUENTIAL));
 			if (add_file.get() == NULL)
 			{
+#ifndef _WIN32
+				if(errno==ELOOP)
+				{
+					Server->Log("Error opening file \"" + filename + "\" for ZIP file download. Symlink loop. Ignoring file. " + os_last_error_str(), LL_INFO);
+					continue;
+				}
+#endif
+
 				Server->Log("Error opening file \"" + filename + "\" for ZIP file download. " + os_last_error_str(), LL_ERROR);
 				return false;
 			}
@@ -340,12 +349,7 @@ bool add_dir(mz_zip_archive& zip_archive, const std::string& archivefoldername, 
 				{
 					symlink_loop = true;
 				}
-				if (orig_skip_special && ExtractFilePath(filename, os_file_sep()) == start_foldername
-					&& next(ExtractFileName(filename, os_file_sep()), 0, ".symlink_"))
-				{
-					symlink_outside = true;
-				}
-				else if (next(filename + os_file_sep(), 0, start_foldername + os_file_sep()))
+				if (next(filename + os_file_sep(), 0, start_foldername + os_file_sep()))
 				{
 					symlink_outside = false;
 				}
@@ -354,7 +358,7 @@ bool add_dir(mz_zip_archive& zip_archive, const std::string& archivefoldername, 
 			if (!symlink_loop && symlink_outside)
 			{
 				if (!add_dir(zip_archive, archivename, folderbase, filename, start_foldername, hashfolderbase, next_hashfoldername, filter,
-								token_authentication, backup_tokens, tokens, false, orig_skip_special))
+								token_authentication, backup_tokens, tokens, false))
 				{
 					return false;
 				}
@@ -393,8 +397,7 @@ bool create_zip_to_output(const std::string& folderbase, const std::string& fold
 	}
 
 	if(!add_dir(zip_archive, "", folderbase, foldername, foldername, hashfolderbase,
-		hashfoldername, filter, token_authentication, backup_tokens, tokens, skip_hashes,
-		skip_hashes))
+		hashfoldername, filter, token_authentication, backup_tokens, tokens, skip_hashes))
 	{
 		Server->Log("Error while adding files and folders to ZIP archive", LL_ERROR);
 		return false;

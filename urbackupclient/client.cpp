@@ -51,6 +51,9 @@
 #include <iostream>
 #include <sys/xattr.h>
 #include <sys/types.h>
+#include <sys/param.h>
+#include <sys/ucred.h>
+#include <sys/mount.h>
 #endif
 
 //For truncating files
@@ -60,7 +63,6 @@
 #include <sys\stat.h>
 #include "win_disk_mon.h"
 #include "win_all_volumes.h"
-#include "win_locked.h"
 #else
 #include "../config.h"
 #ifdef HAVE_MNTENT_H
@@ -88,6 +90,10 @@
 #include "../urbackupcommon/android_popen.h"
 #endif
 
+#if defined(HAVE_SPAWN_H)
+#include <spawn.h>
+#endif
+
 
 volatile bool IdleCheckerThread::idle=false;
 volatile bool IdleCheckerThread::pause=false;
@@ -97,7 +103,7 @@ IMutex* IndexThread::cbt_shadow_id_mutex;
 std::map<std::string, int> IndexThread::cbt_shadow_ids;
 std::map<unsigned int, IndexThread::SResult> IndexThread::index_results;
 unsigned int IndexThread::next_result_id = 1;
-IMutex* IndexThread::result_mutex = nullptr;
+IMutex* IndexThread::result_mutex = NULL;
 
 const char IndexThread::IndexThreadAction_StartFullFileBackup=0;
 const char IndexThread::IndexThreadAction_StartIncrFileBackup=1;
@@ -184,72 +190,72 @@ namespace
 
 	struct ON_DISK_USN_JOURNAL_DATA
 	{
-		uint64 MaximumSize; 
+		uint64 MaximumSize;
 		uint64 AllocationDelta;
 		uint64 UsnJournalID;
 		int64 LowestValidUsn;
 	};
 
-	int64 getUsnNum( const std::string& dir, int64& sequence_id )
+	int64 getUsnNum(const std::string& dir, int64& sequence_id)
 	{
-		WCHAR volume_path[MAX_PATH]; 
+		WCHAR volume_path[MAX_PATH];
 		BOOL ok = GetVolumePathNameW(Server->ConvertToWchar(dir).c_str(), volume_path, MAX_PATH);
-		if(!ok)
+		if (!ok)
 		{
 			Server->Log("GetVolumePathName(dir, volume_path, MAX_PATH) failed in getUsnNum", LL_ERROR);
 			return -1;
 		}
 
-		std::string vol=Server->ConvertFromWchar(volume_path);
+		std::string vol = Server->ConvertFromWchar(volume_path);
 
-		if(vol.size()>0)
+		if (vol.size() > 0)
 		{
-			if(vol[vol.size()-1]=='\\')
+			if (vol[vol.size() - 1] == '\\')
 			{
-				vol.erase(vol.size()-1,1);
+				vol.erase(vol.size() - 1, 1);
 			}
 		}
 
-		if(!vol.empty() && vol[0]!='\\')
+		if (!vol.empty() && vol[0] != '\\')
 		{
-			vol = "\\\\.\\"+vol;
+			vol = "\\\\.\\" + vol;
 		}
 
-		HANDLE hVolume=CreateFileW(Server->ConvertToWchar(vol).c_str(), GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-		if(hVolume==INVALID_HANDLE_VALUE)
+		HANDLE hVolume = CreateFileW(Server->ConvertToWchar(vol).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (hVolume == INVALID_HANDLE_VALUE)
 		{
-			Server->Log("CreateFile of volume '"+vol+"' failed. - getUsnNum", LL_ERROR);
+			Server->Log("CreateFile of volume '" + vol + "' failed. - getUsnNum", LL_ERROR);
 			return -1;
 		}
 
 		USN_JOURNAL_DATA data;
 		DWORD r_bytes;
-		BOOL b=DeviceIoControl(hVolume, FSCTL_QUERY_USN_JOURNAL, NULL, 0, &data, sizeof(USN_JOURNAL_DATA), &r_bytes, NULL);
+		BOOL b = DeviceIoControl(hVolume, FSCTL_QUERY_USN_JOURNAL, NULL, 0, &data, sizeof(USN_JOURNAL_DATA), &r_bytes, NULL);
 
 		CloseHandle(hVolume);
 
-		if(b)
+		if (b)
 		{
-			sequence_id=data.UsnJournalID;
+			sequence_id = data.UsnJournalID;
 			return data.NextUsn;
 		}
 		else
 		{
-			std::unique_ptr<IFile> journal_info(Server->openFile(vol+"\\$Extend\\$UsnJrnl:$Max", MODE_READ_SEQUENTIAL_BACKUP));
+			std::auto_ptr<IFile> journal_info(Server->openFile(vol + "\\$Extend\\$UsnJrnl:$Max", MODE_READ_SEQUENTIAL_BACKUP));
 
-			if(journal_info.get()==NULL) return -1;
+			if (journal_info.get() == NULL) return -1;
 
 			ON_DISK_USN_JOURNAL_DATA journal_data = {};
-			if(journal_info->Read(reinterpret_cast<char*>(&journal_data), sizeof(journal_data))!=sizeof(journal_data))
+			if (journal_info->Read(reinterpret_cast<char*>(&journal_data), sizeof(journal_data)) != sizeof(journal_data))
 			{
 				return -1;
 			}
 
 			sequence_id = journal_data.UsnJournalID;
 
-			std::unique_ptr<IFile> journal(Server->openFile(vol+"\\$Extend\\$UsnJrnl:$J", MODE_READ_SEQUENTIAL_BACKUP));
+			std::auto_ptr<IFile> journal(Server->openFile(vol + "\\$Extend\\$UsnJrnl:$J", MODE_READ_SEQUENTIAL_BACKUP));
 
-			if(journal.get()==NULL) return -1;
+			if (journal.get() == NULL) return -1;
 
 			return journal->Size();
 		}
@@ -270,7 +276,7 @@ namespace
 		{
 			return false;
 		}
-		if (cbtMutexLocked>0)
+		if (cbtMutexLocked > 0)
 		{
 			++cbtMutexLocked;
 			return true;
@@ -296,7 +302,21 @@ namespace
 		{
 			ReleaseMutex(cbtMutex);
 		}
-		assert(cbtMutexLocked>=0);
+		assert(cbtMutexLocked >= 0);
+	}
+
+	void force_unlock_cbt_mutex()
+	{
+		assert(cbtMutex != NULL);
+		if (cbtMutex == NULL)
+		{
+			return;
+		}
+		if (cbtMutexLocked > 0)
+		{
+			ReleaseMutex(cbtMutex);
+			cbtMutexLocked = 0;
+		}
 	}
 
 	struct ScopedUnlockCbtMutex
@@ -313,16 +333,16 @@ namespace
 			0, NULL, 0, KEY_ALL_ACCESS, NULL, &urbackup_cbt_key, NULL) == ERROR_SUCCESS)
 		{
 			WCHAR szBuffer[8192];
-			DWORD dwBufferSize = sizeof(szBuffer)*sizeof(WCHAR);
+			DWORD dwBufferSize = sizeof(szBuffer) * sizeof(WCHAR);
 			ULONG nError;
 			DWORD dwType = REG_MULTI_SZ;
 			nError = RegQueryValueExW(urbackup_cbt_key, L"cbt_paths", 0, &dwType,
 				(LPBYTE)szBuffer, &dwBufferSize);
 			RegCloseKey(urbackup_cbt_key);
 			if (ERROR_SUCCESS == nError
-				&& dwType==REG_MULTI_SZ)
+				&& dwType == REG_MULTI_SZ)
 			{
-				std::wstring rval(szBuffer, szBuffer + dwBufferSize/sizeof(wchar_t));
+				std::wstring rval(szBuffer, szBuffer + dwBufferSize / sizeof(wchar_t));
 				std::string strValue = Server->ConvertFromWchar(rval);
 				std::vector<std::string> toks;
 				std::string sep;
@@ -373,20 +393,42 @@ namespace
 			0, NULL, 0, KEY_ALL_ACCESS, NULL, &urbackup_cbt_key, NULL) == ERROR_SUCCESS)
 		{
 			LSTATUS status = RegSetValueExW(urbackup_cbt_key, L"cbt_paths", 0,
-				REG_MULTI_SZ, reinterpret_cast<const BYTE*>(data.c_str()), static_cast<DWORD>((data.size() + 1)*sizeof(wchar_t)));
+				REG_MULTI_SZ, reinterpret_cast<const BYTE*>(data.c_str()), static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
 			RegCloseKey(urbackup_cbt_key);
 			return status
 				== ERROR_SUCCESS;
 		}
 		return false;
 	}
-#endif
+#else //!_WIN32
+
+	void force_unlock_cbt_mutex()
+	{
+	}
+
+#endif //!_WIN32
 
 #ifndef _WIN32
 	std::string getFolderMount(const std::string& path)
 	{		
 #ifndef HAVE_MNTENT_H
+#ifdef __APPLE__
+		int count;
+		struct statfs *mntbuf;
+		count = getmntinfo(&mntbuf, MNT_NOWAIT);
+		std::string maxmount;
+		for (int i = 0; i < count; i++) {
+			std::string mountPoint = mntbuf[i].f_mntonname;
+			if(path.find(mountPoint)==0 &&
+				mountPoint.size()>maxmount.size())
+			{
+				maxmount = mountPoint;
+			}
+		}
+		return maxmount;
+#else
 		return std::string();
+#endif
 #else
 		FILE *aFile;
 
@@ -394,9 +436,11 @@ namespace
 		if (aFile == NULL) {
 			return std::string();
 		}
+		char buf[1024];
 		struct mntent *ent;
+		struct mntent entbuf;
 		std::string maxmount;
-		while (NULL != (ent = getmntent(aFile)))
+		while (NULL != (ent = getmntent_r(aFile, &entbuf, buf, sizeof(buf))))
 		{
 			if(path.find(ent->mnt_dir)==0 &&
 				std::string(ent->mnt_dir).size()>maxmount.size())
@@ -429,7 +473,9 @@ namespace
 			return std::string();
 		}
 		struct mntent *ent;
-		while (NULL != (ent = getmntent(aFile)))
+		struct mntent entbuf;
+		char buf[1024];
+		while (NULL != (ent = getmntent_r(aFile, &entbuf, buf, sizeof(buf))))
 		{
 			if(std::string(ent->mnt_dir)==path)
 			{
@@ -462,7 +508,9 @@ namespace
 			return std::string();
 		}
 		struct mntent *ent;
-		while (NULL != (ent = getmntent(aFile)))
+		struct mntent entbuf;
+		char buf[1024];
+		while (NULL != (ent = getmntent_r(aFile, &entbuf, buf, sizeof(buf))))
 		{
 			if(std::string(ent->mnt_fsname)==dev)
 			{
@@ -479,7 +527,7 @@ namespace
 
 
 #ifndef _WIN32
-	std::vector<std::string> getAllMounts(const std::vector<std::string>& excl_fs, bool filter_usb)
+	std::vector<std::string> getAllMounts(const std::vector<std::string>& excl_fs, bool filter_usb, bool return_devs)
 	{
 #ifndef HAVE_MNTENT_H
 		return std::vector<std::string>();
@@ -514,13 +562,18 @@ namespace
 			return std::vector<std::string>();
 		}
 		struct mntent *ent;
+		struct mntent entbuf;
+		char buf[1024];
 		std::vector<std::string> ret;
-		while (NULL != (ent = getmntent(aFile)))
+		while (NULL != (ent = getmntent_r(aFile, &entbuf, buf, sizeof(buf))))
 		{
 			if (!std::binary_search(excl_fs.begin(), excl_fs.end(), std::string(ent->mnt_type))
 				&& !std::binary_search(usb_devs.begin(), usb_devs.end(), std::string(ent->mnt_fsname)) )
 			{
-				ret.push_back(ent->mnt_dir);
+				if(return_devs)
+					ret.push_back(ent->mnt_fsname);
+				else
+					ret.push_back(ent->mnt_dir);
 			}
 		}
 		endmntent(aFile);
@@ -528,13 +581,78 @@ namespace
 		return ret;
 #endif
 	}
+
+	std::vector<std::string> getFsFilterList(const std::vector<std::string>& vol_types)
+	{
+		std::vector<std::string> filter_add;
+		filter_add.push_back("sysfs");
+		filter_add.push_back("proc");
+		filter_add.push_back("devtmpfs");
+		filter_add.push_back("devpts");
+		filter_add.push_back("securityfs");
+		filter_add.push_back("cgroup");
+		filter_add.push_back("pstore");
+		filter_add.push_back("autofs");
+		filter_add.push_back("debugfs");
+		filter_add.push_back("mqueue");
+		filter_add.push_back("hugetlbfs");
+		filter_add.push_back("configfs");
+		filter_add.push_back("cgroup2");
+		filter_add.push_back("fusectl");
+		filter_add.push_back("efivarfs");
+		filter_add.push_back("nfs");
+
+		if(std::find(vol_types.begin(), vol_types.end(), "ALL") != vol_types.end() ||
+			std::find(vol_types.begin(), vol_types.end(), "ALL_NONUSB") != vol_types.end())
+		{
+			filter_add.push_back("tmpfs");
+		}
+		else if(std::find(vol_types.begin(), vol_types.end(), "ALL_NONET") != vol_types.end())
+		{
+			filter_add.push_back("nfs");
+			filter_add.push_back("smbfs");
+			filter_add.push_back("cifs");
+		}
+
+		std::sort(filter_add.begin(), filter_add.end());
+		return filter_add;
+	}
+
+	std::vector<std::string> getAllMountsByVoltypes(const std::vector<std::string>& vol_types)
+	{
+		const bool filter_usb = std::find(vol_types.begin(), vol_types.end(), "ALL_NONUSB") != vol_types.end();
+		const std::vector<std::string> filter_add = getFsFilterList(vol_types);
+		return getAllMounts(filter_add, filter_usb, false);
+	}
 #endif
 }
 
-IMutex *IndexThread::filelist_mutex=nullptr;
-IPipe* IndexThread::msgpipe=nullptr;
-IFileServ *IndexThread::filesrv=nullptr;
-IMutex *IndexThread::filesrv_mutex=nullptr;
+IMutex *IndexThread::filelist_mutex=NULL;
+IPipe* IndexThread::msgpipe=NULL;
+IFileServ *IndexThread::filesrv=NULL;
+IMutex *IndexThread::filesrv_mutex=NULL;
+
+#ifndef _WIN32
+std::string get_all_volumes_list(bool filter_usb, SVolumesCache*& cache)
+{
+	std::vector<std::string> vol_types;
+	if(filter_usb)
+		vol_types.push_back("ALL_NONUSB");
+	else
+		vol_types.push_back("ALL");
+
+	const std::vector<std::string> filter_add = getFsFilterList(vol_types);
+	const std::vector<std::string> mounts = getAllMounts(filter_add, filter_usb, true);
+	std::string ret;
+	for(size_t i=0;i<mounts.size();++i)
+	{
+		if(!ret.empty())
+			ret+=";";
+		ret+=mounts[i];
+	}
+	return ret;
+}
+#endif
 
 std::string add_trailing_slash(const std::string &strDirName)
 {
@@ -554,27 +672,28 @@ std::string add_trailing_slash(const std::string &strDirName)
 
 IndexThread::IndexThread(void)
 	: index_error(false), last_filebackup_filetime(0), index_group(-1),
-	with_scripts(false), volumes_cache(nullptr), phash_queue(nullptr),
-	index_backup_dirs_optional(false), sc_refs_cleanup(false)
+	with_scripts(false), volumes_cache(NULL), phash_queue(NULL),
+	index_backup_dirs_optional(false), sc_refs_cleanup(false),
+	dataless_warning_logged(false)
 {
-	if(filelist_mutex==nullptr)
+	if(filelist_mutex==NULL)
 		filelist_mutex=Server->createMutex();
-	if(msgpipe==nullptr)
+	if(msgpipe==NULL)
 		msgpipe=Server->createMemoryPipe();
-	if(filesrv_mutex==nullptr)
+	if(filesrv_mutex==NULL)
 		filesrv_mutex=Server->createMutex();
 
 	read_error_mutex = Server->createMutex();
 
-	if (cbt_shadow_id_mutex == nullptr)
+	if (cbt_shadow_id_mutex == NULL)
 		cbt_shadow_id_mutex = Server->createMutex();
 
-	if (result_mutex == nullptr)
+	if (result_mutex == NULL)
 		result_mutex = Server->createMutex();
 
 	curr_result_id = 0;
 
-	dwt=nullptr;
+	dwt=NULL;
 
 	if(Server->getPlugin(Server->getThreadID(), filesrv_pluginid))
 	{
@@ -582,7 +701,7 @@ IndexThread::IndexThread(void)
 	}
 	else
 	{
-		filesrv=nullptr;
+		filesrv=NULL;
 		Server->Log("Error starting fileserver", LL_ERROR);
 	}
 
@@ -633,9 +752,6 @@ void IndexThread::updateDirs(void)
 	std::vector<ContinuousWatchEnqueue::SWatchItem> continuous_watch;
 	for(size_t i=0;i<backup_dirs.size();++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		watching.push_back(backup_dirs[i].path);
 
 		if(backup_dirs[i].group==c_group_continuous)
@@ -654,9 +770,6 @@ void IndexThread::updateDirs(void)
 	{
 		for(size_t i=0;i<backup_dirs.size();++i)
 		{
-			if (backup_dirs[i].facet != index_facet_id)
-				continue;
-
 			std::string msg="A"+backup_dirs[i].path;
 			dwt->getPipe()->Write(msg);
 		}
@@ -691,12 +804,13 @@ void IndexThread::operator()(void)
 	Server->waitForStartupComplete();
 
 #ifdef _WIN32
-	init_win_locked();
 	initVss();
 	init_cbt_mutex();
 	if (os_get_file_type("urbctctl.exe") != 0)
 	{
 		add_cbt_path(Server->getServerWorkingDir() + os_file_sep() + "urbackup");
+
+		system("urbctctl.exe setup");
 	}
 #endif
 
@@ -769,7 +883,6 @@ void IndexThread::operator()(void)
 			data.getInt(&sha_version);
 			int running_jobs = 2;
 			data.getInt(&running_jobs);
-			data.getInt(&index_facet_id);
 			char async_index = 0;
 			data.getChar(&async_index);
 			std::string async_ticket;
@@ -898,12 +1011,12 @@ void IndexThread::operator()(void)
 				async_timeout_starttime = Server->getTimeMS();
 			}
 
-			if (phash_queue != nullptr
+			if (phash_queue != NULL
 				&& phash_queue->deref())
 			{
 				delete phash_queue;
 			}
-			phash_queue = nullptr;
+			phash_queue = NULL;
 		}
 		else if(action==IndexThreadAction_StartFullFileBackup)
 		{
@@ -918,7 +1031,6 @@ void IndexThread::operator()(void)
 			data.getInt(&sha_version);
 			int running_jobs = 2;
 			data.getInt(&running_jobs);
-			data.getInt(&index_facet_id);
 			char async_index = 0;
 			data.getChar(&async_index);
 			std::string async_ticket;
@@ -996,12 +1108,12 @@ void IndexThread::operator()(void)
 				async_timeout_starttime = Server->getTimeMS();
 			}
 
-			if (phash_queue != nullptr
+			if (phash_queue != NULL
 				&& phash_queue->deref())
 			{
 				delete phash_queue;
 			}
-			phash_queue = nullptr;
+			phash_queue = NULL;
 		}
 		else if(action==IndexThreadAction_CreateShadowcopy
 			 || action==IndexThreadAction_ReferenceShadowcopy )
@@ -1056,14 +1168,14 @@ void IndexThread::operator()(void)
 			
 			if(scd->running==true && Server->getTimeSeconds()-scd->starttime<shadowcopy_timeout/1000)
 			{
-				if(scd->ref!=nullptr && image_backup==0)
+				if(scd->ref!=NULL && image_backup==0)
 				{
 					scd->ref->dontincrement=true;
 				}
 				bool onlyref = reference_sc;
 				if(start_shadowcopy(scd, &onlyref, image_backup!=0?true:false, running_jobs>1, std::vector<SCRef*>(), image_backup!=0?true:false))
 				{
-					if (scd->ref!=nullptr
+					if (scd->ref!=NULL
 						&& !onlyref)
 					{
 						for (size_t k = 0; k < sc_refs.size(); ++k)
@@ -1080,7 +1192,7 @@ void IndexThread::operator()(void)
 						}
 					}
 
-					if (scd->ref != nullptr
+					if (scd->ref != NULL
 						&& !scd->ref->cbt
 						&& !disableCbt(scd->orig_target) )
 					{
@@ -1094,6 +1206,8 @@ void IndexThread::operator()(void)
 				}
 				else
 				{
+					force_unlock_cbt_mutex();
+
 					if (!disableCbt(scd->orig_target))
 					{
 						VSSLog("Error disabling change block tracking for " + scd->orig_target+" (2)", LL_ERROR);
@@ -1133,8 +1247,10 @@ void IndexThread::operator()(void)
 				bool onlyref = reference_sc;
 				bool b= start_shadowcopy(scd, &onlyref, image_backup!=0?true:false, running_jobs>1, std::vector<SCRef*>(), image_backup==0?false:true);
 				Server->Log("done.", LL_DEBUG);
-				if(!b || scd->ref==nullptr)
+				if(!b || scd->ref==NULL)
 				{
+					force_unlock_cbt_mutex();
+
 					if(scd->fileserv)
 					{
 						shareDir(std::string(), scd->dir, scd->target);
@@ -1150,7 +1266,7 @@ void IndexThread::operator()(void)
 				}
 				else
 				{
-					if (scd->ref != nullptr
+					if (scd->ref != NULL
 						&& !onlyref)
 					{
 						for (size_t k = 0; k < sc_refs.size(); ++k)
@@ -1167,7 +1283,7 @@ void IndexThread::operator()(void)
 						}
 					}
 
-					if (scd->ref != nullptr
+					if (scd->ref != NULL
 						&& !scd->ref->cbt
 						&& !disableCbt(scd->orig_target))
 					{
@@ -1222,14 +1338,14 @@ void IndexThread::operator()(void)
 
 			int64 starttime = Server->getTimeMS();
 
-			while (filesrv != nullptr
+			while (filesrv != NULL
 				&& filesrv->hasActiveTransfers(scdir, starttoken)
 				&& Server->getTimeMS() - starttime < 5000)
 			{
 				Server->wait(100);
 			}
 
-			if (filesrv != nullptr
+			if (filesrv != NULL
 				&& filesrv->hasActiveTransfers(scdir, starttoken) )
 			{
 				addResult(curr_result_id, "in use");
@@ -1440,11 +1556,11 @@ void IndexThread::operator()(void)
 
 			SCDirs *scd = getSCDir(scdir, index_clientsubname, true);
 
-			if(scd!=nullptr && scd->ref!=nullptr)
+			if(scd!=NULL && scd->ref!=NULL)
 			{
 				scd->ref->starttime = Server->getTimeSeconds();
 			}
-			if (scd != nullptr)
+			if (scd != NULL)
 			{
 				scd->starttime = Server->getTimeSeconds();
 			}
@@ -1488,7 +1604,7 @@ void IndexThread::operator()(void)
 
 IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simultaneous_other)
 {
-	readPatterns(index_facet_id, index_group, index_clientsubname,
+	readPatterns(index_group, index_clientsubname,
 		index_exclude_dirs, index_include_dirs,
 		index_backup_dirs_optional);
 	file_id = 0;
@@ -1515,9 +1631,6 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 	std::vector<int> selected_dir_db_tgroup;
 	for(size_t i=0;i<backup_dirs.size();++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		if(backup_dirs[i].group==index_group
 			|| (backup_with_vss_components
 				&& backup_dirs[i].group== c_group_vss_components) )
@@ -1595,9 +1708,6 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 
 	for(size_t i=0;i<backup_dirs.size();++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		backup_dirs[i].symlinked_confirmed=false;
 	}
 
@@ -1605,20 +1715,21 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 
 	last_tmp_update_time=Server->getTimeMS();
 	index_error=false;
+	dataless_warning_logged=false;
 
-	std::string filelist_dest_fn = "urbackup/data_"+convert(index_facet_id)+"/filelist.ub";
+	std::string filelist_dest_fn = "urbackup/data/filelist.ub";
 	if (index_group != c_group_default)
 	{
-		filelist_dest_fn = "urbackup/data_"+convert(index_facet_id)+"/filelist_" + convert(index_group) + ".ub";
+		filelist_dest_fn = "urbackup/data/filelist_" + convert(index_group) + ".ub";
 	}
 
-	IFile* last_filelist_f = nullptr;
+	IFile* last_filelist_f = NULL;
 	ScopedFreeObjRef<IFile*> last_filelist_f_scope(last_filelist_f);
 	if (index_follow_last)
 	{
 		last_filelist_f = Server->openFile(filelist_dest_fn, MODE_READ);
 
-		if (last_filelist_f == nullptr)
+		if (last_filelist_f == NULL)
 		{
 			index_follow_last = false;
 		}
@@ -1627,8 +1738,7 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 		last_filelist->f = last_filelist_f;
 	}
 
-	std::string filelist_fn = "urbackup/data_"+convert(index_facet_id)+
-		"/filelist_new_" + convert(index_group) + ".ub";
+	std::string filelist_fn = "urbackup/data/filelist_new_" + convert(index_group) + ".ub";
 
 	std::streamoff outfile_size = 0;
 	{
@@ -1644,6 +1754,8 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 				VSS_ID ssetid;
 				if (!start_shadowcopy_components(ssetid, &has_active_transaction))
 				{
+					force_unlock_cbt_mutex();
+
 					index_error = true;
 					VSSLog("Indexing Windows components failed", LL_ERROR);
 					return IndexErrorInfo_Error;
@@ -1689,9 +1801,6 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 
 		for(size_t i=0;i<backup_dirs.size();++i)
 		{
-			if (backup_dirs[i].facet != index_facet_id)
-				continue;
-
 			if(backup_dirs[i].group!=index_group)
 			{
 				continue;
@@ -1835,7 +1944,7 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 					postSnapshotProcessing(scd, full_backup);
 				}
 #endif
-				if (scd->ref != nullptr
+				if (scd->ref != NULL
 					&& !scd->ref->cbt)
 				{
 					if (!disableCbt(backup_dirs[i].path))
@@ -1904,11 +2013,13 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 			{
 				for(size_t k=0;k<backup_dirs.size();++k)
 				{
-					if (backup_dirs[k].facet != index_facet_id)
-						continue;
-
 					SCDirs *scd=getSCDir(backup_dirs[k].tname, index_clientsubname, false);
 					release_shadowcopy(scd);
+				}
+
+				if (outfile.bad() || outfile.fail())
+				{
+					VSSLog("Error writing to file list at " + filelist_fn, LL_ERROR);
 				}
 				
 				outfile.close();
@@ -1940,6 +2051,14 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 			addBackupScripts(outfile);
 		}
 
+		if (outfile.bad() || outfile.fail())
+		{
+			VSSLog("Error writing to file list at " + filelist_fn, LL_ERROR);
+			outfile.close();
+			removeFile(filelist_fn);
+			return IndexErrorInfo_FilelistWriteError;
+		}
+
 		std::streampos pos=outfile.tellp();
 		outfile.seekg(0, std::ios::end);
 		if(pos!=outfile.tellg())
@@ -1969,7 +2088,7 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 	commitAddFilesBuffer();
 	commitModifyHardLinks();
 
-	if (phash_queue != nullptr)
+	if (phash_queue != NULL)
 	{
 		CWData data;
 		data.addChar(ID_PHASH_FINISH);
@@ -2029,10 +2148,10 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 		ret = IndexErrorInfo_NoBackupPaths;
 	}
 
-	if (last_filelist_f!=nullptr)
+	if (last_filelist_f!=NULL)
 	{
 		Server->destroy(last_filelist_f);
-		last_filelist_f = nullptr;
+		last_filelist_f = NULL;
 		last_filelist.reset();
 	}
 
@@ -2068,9 +2187,6 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 
 	for (size_t i = 0; i < backup_dirs.size(); ++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		if (backup_dirs[i].group == index_group
 			&& backup_dirs[i].reset_keep)
 		{
@@ -2082,9 +2198,6 @@ IndexThread::IndexErrorInfo IndexThread::indexDirs(bool full_backup, bool simult
 
 	for (size_t i = 0; i < backup_dirs.size(); ++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		if (backup_dirs[i].group == index_group
 			&& (!backup_dirs[i].symlinked || backup_dirs[i].symlinked_confirmed) )
 		{
@@ -2109,19 +2222,16 @@ void IndexThread::updateBackupDirsWithAll()
 	bool has_all = false;
 	bool has_all_nonusb = false;
 	size_t ref_idx;
-	std::vector<std::string> filter_add;
+	std::vector<std::string> vol_types;
 	for (size_t i = 0; i < backup_dirs.size(); ++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		if (backup_dirs[i].group == index_group
 			&& backup_dirs[i].path == "ALL" && backup_dirs[i].tname == "ALL"
 			&& backup_dirs[i].server_default == EBackupDirServerDefault_Default)
 		{
 			ref_idx = i;
 			has_all = true;
-			filter_add.push_back("tmpfs");
+			vol_types.push_back(backup_dirs[i].path);
 		}
 		else if (backup_dirs[i].group == index_group
 			&& backup_dirs[i].path == "ALL_NONUSB" &&  backup_dirs[i].tname == "ALL_NONUSB"
@@ -2129,7 +2239,7 @@ void IndexThread::updateBackupDirsWithAll()
 		{
 			ref_idx = i;
 			has_all_nonusb = true;
-			filter_add.push_back("tmpfs");
+			vol_types.push_back(backup_dirs[i].path);
 		}
 #ifndef _WIN32
 		else if (backup_dirs[i].group == index_group
@@ -2138,9 +2248,7 @@ void IndexThread::updateBackupDirsWithAll()
 		{
 			ref_idx = i;
 			has_all = true;
-			filter_add.push_back("nfs");
-			filter_add.push_back("smbfs");
-			filter_add.push_back("cifs");
+			vol_types.push_back(backup_dirs[i].path);
 		}
 		else if (backup_dirs[i].group == index_group
 			&& backup_dirs[i].path == "ALL_WITH_TMPFS" &&  backup_dirs[i].tname == "ALL_WITH_TMPFS"
@@ -2148,6 +2256,7 @@ void IndexThread::updateBackupDirsWithAll()
 		{
 			ref_idx = i;
 			has_all = true;
+			vol_types.push_back(backup_dirs[i].path);
 		}
 #endif
 	}
@@ -2170,23 +2279,7 @@ void IndexThread::updateBackupDirsWithAll()
 #ifndef HAVE_MNTENT_H
 		VSSLog("Error getting mounted file systems. Client not compiled with HAVE_MNTENT_H", LL_ERROR);
 #endif
-		filter_add.push_back("sysfs");
-		filter_add.push_back("proc");
-		filter_add.push_back("devtmpfs");
-		filter_add.push_back("devpts");
-		filter_add.push_back("securityfs");
-		filter_add.push_back("cgroup");
-		filter_add.push_back("pstore");
-		filter_add.push_back("autofs");
-		filter_add.push_back("debugfs");
-		filter_add.push_back("mqueue");
-		filter_add.push_back("hugetlbfs");
-		filter_add.push_back("configfs");
-		filter_add.push_back("cgroup2");
-		filter_add.push_back("fusectl");
-		filter_add.push_back("efivarfs");
-		std::sort(filter_add.begin(), filter_add.end());
-		volumes = getAllMounts(filter_add, has_all_nonusb);
+		volumes = getAllMountsByVoltypes(vol_types);
 	}
 #endif
 
@@ -2195,7 +2288,7 @@ void IndexThread::updateBackupDirsWithAll()
 	std::vector<std::string> volumes_norm;
 	if (!volumes.empty())
 	{
-		IQuery *q_add = db->Prepare("INSERT INTO backupdirs (name, path, server_default, optional, tgroup, facet) VALUES (?, ? ," + convert((int)EBackupDirServerDefault_AllSrc) + ", ?, ?, ?)", false);
+		IQuery *q_add = db->Prepare("INSERT INTO backupdirs (name, path, server_default, optional, tgroup) VALUES (?, ? ," + convert((int)EBackupDirServerDefault_AllSrc) + ", ?, ?)", false);
 		IQuery *q_name = db->Prepare("SELECT id FROM backupdirs WHERE name=?", false);
 
 		for (size_t i = 0; i < volumes.size(); ++i)
@@ -2223,9 +2316,6 @@ void IndexThread::updateBackupDirsWithAll()
 			bool found = false;
 			for (size_t j = 0; j < backup_dirs.size(); ++j)
 			{
-				if (backup_dirs[j].facet != index_facet_id)
-					continue;
-
 				std::string ovol = backup_dirs[j].path;
 #ifdef _WIN32
 				if (ovol.size() <= 3)
@@ -2297,7 +2387,6 @@ void IndexThread::updateBackupDirsWithAll()
 				q_add->Bind(cvol);
 				q_add->Bind(new_flags);
 				q_add->Bind(index_group);
-				q_add->Bind(index_facet_id);
 				q_add->Write();
 				q_add->Reset();
 			}
@@ -2307,15 +2396,9 @@ void IndexThread::updateBackupDirsWithAll()
 		db->destroyQuery(q_name);
 	}
 
-	IQuery* q_del = nullptr;
+	IQuery* q_del = NULL;
 	for (size_t i = 0; i < backup_dirs.size();)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-		{
-			++i;
-			continue;
-		}
-
 		if (backup_dirs[i].group == index_group
 			&& backup_dirs[i].server_default == EBackupDirServerDefault_AllSrc)
 		{
@@ -2327,7 +2410,7 @@ void IndexThread::updateBackupDirsWithAll()
 
 			if (std::find(volumes_norm.begin(), volumes_norm.end(), ovol)== volumes_norm.end())
 			{
-				if(q_del==nullptr)
+				if(q_del==NULL)
 					q_del = db->Prepare("DELETE FROM backupdirs WHERE id=?", false);
 
 				std::string cpath = backup_dirs[i].path;
@@ -2340,9 +2423,6 @@ void IndexThread::updateBackupDirsWithAll()
 				bool found = false;
 				for (size_t j = 0; j < backup_dirs.size(); ++j)
 				{
-					if (backup_dirs[j].facet != index_facet_id)
-						continue;
-
 					if (backup_dirs[j].path == cpath)
 					{
 						found = true;
@@ -2392,8 +2472,8 @@ bool IndexThread::skipFile(const std::string& filepath, const std::string& named
 	{
 		return true;
 	}
-	if( !isIncluded(include_dirs, filepath, nullptr)
-		&& (namedpath.empty() || !isIncluded(include_dirs, namedpath, nullptr) ) )
+	if( !isIncluded(include_dirs, filepath, NULL)
+		&& (namedpath.empty() || !isIncluded(include_dirs, namedpath, NULL) ) )
 	{
 		return true;
 	}
@@ -2476,8 +2556,7 @@ bool IndexThread::initialCheck(std::vector<SRecurParams>& params_stack, size_t s
 					}
 
 					VSSLog("Hint: Directory to backup (\"" + orig_dir + "\") does not exist. It may have been deleted or renamed. "
-						"Set the \"optional\" directory flag if you do not want backups to fail if this directory is missing or "
-						"set \"Directories to backup are optional by default\" in the file backup settings.", LL_WARNING);
+						"Set the \"optional\" directory flag if you do not want backups to fail if directories are missing.", LL_WARNING);
 
 #ifdef _WIN32
 					if (orig_dir.size() > 1
@@ -2606,7 +2685,7 @@ bool IndexThread::initialCheck(std::vector<SRecurParams>& params_stack, size_t s
 				}
 			}
 			else if (calculate_filehashes_on_client
-				&& phash_queue != nullptr
+				&& phash_queue != NULL
 				&& !files[i].isspecialf
 				&& files[i].size>=link_file_min_size )
 			{
@@ -2675,7 +2754,7 @@ bool IndexThread::initialCheck(std::vector<SRecurParams>& params_stack, size_t s
 	if (first)
 	{
 		assert(params_stack.empty());
-		SRecurParams curr_params(SFileAndHash(), nullptr, false,
+		SRecurParams curr_params(SFileAndHash(), NULL, false,
 			std::string(), std::string(), std::string(), depth, std::string::npos);
 		curr_params.state = 2;
 		params_stack.push_back(curr_params);
@@ -2730,7 +2809,7 @@ bool IndexThread::initialCheck(std::vector<SRecurParams>& params_stack, size_t s
 			if( curr_included ||  !adding_worthless1 || !adding_worthless2 )
 			{
 				first_info.idx = i;
-				SRecurParams curr_params(files[i], first ? &first_info : nullptr, curr_included,
+				SRecurParams curr_params(files[i], first ? &first_info : NULL, curr_included,
 					orig_dir, dir, named_path, depth, stack_idx);
 				params_stack.push_back(curr_params);
 			}
@@ -2822,7 +2901,7 @@ void IndexThread::initialCheckRecur1(std::vector<SRecurParams>& params_stack, SR
 
 	std::string listname = params.file.name;
 
-	if (params.first_info!=nullptr && !params.first_info->fn_filter.empty() && params.first_info->idx == 0)
+	if (params.first_info!=NULL && !params.first_info->fn_filter.empty() && params.first_info->idx == 0)
 	{
 		listname = params.named_path;
 	}
@@ -2929,9 +3008,6 @@ bool IndexThread::readBackupDirs(void)
 	bool has_backup_dir = false;
 	for(size_t i=0;i<backup_dirs.size();++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		if (isAllSpecialDir(backup_dirs[i]))
 		{
 			if (index_group != -1 && backup_dirs[i].group == index_group)
@@ -2949,7 +3025,7 @@ bool IndexThread::readBackupDirs(void)
 			has_backup_dir=true;
 		}
 
-		if(filesrv!=nullptr)
+		if(filesrv!=NULL)
 			shareDir("", backup_dirs[i].tname, backup_dirs[i].path);
 	}
 	return has_backup_dir;
@@ -3089,7 +3165,7 @@ bool IndexThread::readBackupScripts(bool full_backup)
 
 					scripts.push_back(new_script);
 
-					if (filesrv != nullptr)
+					if (filesrv != NULL)
 					{
 						filesrv->addScriptOutputFilenameMapping(new_script.outputname,
 							new_script.scriptname, tar_file);
@@ -3105,7 +3181,7 @@ bool IndexThread::readBackupScripts(bool full_backup)
 		}
 	}
 
-	if (filesrv != nullptr && !scripts.empty() && !first_script_path.empty())
+	if (filesrv != NULL && !scripts.empty() && !first_script_path.empty())
 	{
 		filesrv->shareDir("urbackup_backup_scripts", first_script_path, std::string(), true);
 	}
@@ -3121,7 +3197,7 @@ bool IndexThread::addMissingHashes(std::vector<SFileAndHash>* dbfiles, std::vect
 {
 	bool calculated_hash=false;
 
-	if(fsfiles!=nullptr)
+	if(fsfiles!=NULL)
 	{
 		for(size_t i=0;i<fsfiles->size();++i)
 		{
@@ -3139,7 +3215,7 @@ bool IndexThread::addMissingHashes(std::vector<SFileAndHash>* dbfiles, std::vect
 
 			bool needs_hashing=true;
 
-			if(dbfiles!=nullptr)
+			if(dbfiles!=NULL)
 			{
 				std::vector<SFileAndHash>::iterator it = std::lower_bound(dbfiles->begin(), dbfiles->end(), fsfile);
 
@@ -3164,7 +3240,7 @@ bool IndexThread::addMissingHashes(std::vector<SFileAndHash>* dbfiles, std::vect
 			}
 		}
 	}
-	else if(dbfiles!=nullptr
+	else if(dbfiles!=NULL
 		&& calc_hashes)
 	{
 		for(size_t i=0;i<dbfiles->size();++i)
@@ -3340,10 +3416,10 @@ std::vector<SFileAndHash> IndexThread::getFilesProxy(const std::string &orig_pat
 
 
 		if(calculate_filehashes_on_client
-			&& (phash_queue==nullptr || has_files) )
+			&& (phash_queue==NULL || has_files) )
 		{
-			addMissingHashes(has_files ? &db_files : nullptr, &fs_files, orig_path,
-				path, named_path, exclude_dirs, include_dirs, phash_queue==nullptr);
+			addMissingHashes(has_files ? &db_files : NULL, &fs_files, orig_path,
+				path, named_path, exclude_dirs, include_dirs, phash_queue==NULL);
 		}
 
 		if( has_files)
@@ -3535,14 +3611,14 @@ bool IndexThread::find_existing_shadowcopy(SCDirs *dir, bool *onlyref, bool allo
 #ifndef _WIN32
 				int64 wait_starttime = Server->getTimeMS();
 
-				while (filesrv != nullptr
+				while (filesrv != NULL
 					&& filesrv->hasActiveTransfers(dir->dir, starttoken)
 					&& Server->getTimeMS() - wait_starttime < 5000)
 				{
 					Server->wait(100);
 				}
 
-				if (filesrv != nullptr
+				if (filesrv != NULL
 					&& filesrv->hasActiveTransfers(dir->dir, starttoken))
 				{
 					sc_refs[i]->cleanup = true;
@@ -3596,7 +3672,7 @@ bool IndexThread::find_existing_shadowcopy(SCDirs *dir, bool *onlyref, bool allo
 						for (std::map<std::string, SCDirs*>::iterator it = scdirs_server.begin();
 							it != scdirs_server.end();++it)
 						{
-							if (it->second->ref != nullptr
+							if (it->second->ref != NULL
 								&& it->second->ref != curr
 								&& it->second->ref->ssetid == ssetid)
 							{
@@ -3663,12 +3739,12 @@ bool IndexThread::find_existing_shadowcopy(SCDirs *dir, bool *onlyref, bool allo
 					cd->modShadowcopyRefCount(dir->ref->save_id, 1);
 				}
 
-				if(onlyref!=nullptr)
+				if(onlyref!=NULL)
 				{
 					*onlyref=true;
 				}
 
-				if( stale_shadowcopy!=nullptr )
+				if( stale_shadowcopy!=NULL )
 				{
 					if(!do_restart)
 					{
@@ -3694,7 +3770,7 @@ bool IndexThread::start_shadowcopy(SCDirs *dir, bool *onlyref, bool allow_restar
 	bool* has_active_transaction)
 {
 	bool c_onlyref = false;
-	if (onlyref != nullptr)
+	if (onlyref != NULL)
 	{
 		if (*onlyref)
 		{
@@ -3771,7 +3847,7 @@ bool IndexThread::start_shadowcopy(SCDirs *dir, bool *onlyref, bool allow_restar
 	{
 		sc_refs.erase(sc_refs.end()-1);
 		delete dir->ref;
-		dir->ref=nullptr;
+		dir->ref=NULL;
 		dir->target = dir->orig_target;
 	}
 
@@ -3861,7 +3937,7 @@ bool IndexThread::release_shadowcopy(SCDirs *dir, bool for_imagebackup, int save
 {
 	if(for_imagebackup)
 	{
-		if(dir->ref!=nullptr && dir->ref->save_id!=-1)
+		if(dir->ref!=NULL && dir->ref->save_id!=-1)
 		{
 			cd->modShadowcopyRefCount(dir->ref->save_id, -1);
 		}
@@ -3873,7 +3949,7 @@ bool IndexThread::release_shadowcopy(SCDirs *dir, bool for_imagebackup, int save
 
 	bool ok=true;
 
-	if(dir->ref!=nullptr 
+	if(dir->ref!=NULL 
 #ifdef _WIN32
 		&& dir->ref->backupcom!=NULL
 #endif
@@ -3888,14 +3964,14 @@ bool IndexThread::release_shadowcopy(SCDirs *dir, bool for_imagebackup, int save
 			VSSLog("Deleting shadowcopy for path \""+dir->target+"\" -2", LL_DEBUG);
 			ok = deleteShadowcopy(dir);
 
-			if(dir->ref->save_id!=-1)
+			if(ok && dir->ref->save_id!=-1)
 			{
 				cd->deleteShadowcopy(dir->ref->save_id);
 			}
 		}
 	}
 
-	if(dir->ref!=nullptr)
+	if(dir->ref!=NULL)
 	{
 		for(size_t k=0;k<dir->ref->starttokens.size();++k)
 		{
@@ -3939,8 +4015,8 @@ bool IndexThread::release_shadowcopy(SCDirs *dir, bool for_imagebackup, int save
 								}
 								it->second->target=it->second->orig_target;
 
-								it->second->ref=nullptr;
-								if(dontdel==nullptr || it->second!=dontdel )
+								it->second->ref=NULL;
+								if(dontdel==NULL || it->second!=dontdel )
 								{
 									delete it->second;
 									server_it->second.erase(it);
@@ -4051,7 +4127,7 @@ SCDirs* IndexThread::getSCDir(const std::string& path, const std::string& client
 	std::map<std::string, SCDirs*>::iterator it=scdirs_server.find(path);
 	if(it!=scdirs_server.end())
 	{
-		if (it->second->ref != nullptr)
+		if (it->second->ref != NULL)
 			it->second->ref->cleanup = false;
 
 		return it->second;
@@ -4095,8 +4171,8 @@ int IndexThread::execute_hook(std::string script_name, bool incr, std::string se
 	std::string output;
 	int rc = os_popen(quoted_script_name + " " + (incr ? "1" : "0") + " \"" 
 		+ server_token + "\" "
-		+ (index_group!=nullptr ? convert(*index_group) : "" )
-		+ (error_info!=nullptr ? convert(*error_info) : "" )
+		+ (index_group!=NULL ? convert(*index_group) : "" )
+		+ (error_info!=NULL ? convert(*error_info) : "" )
 		+" 2>&1", output);
 
 	if (rc != 0 && !output.empty())
@@ -4170,26 +4246,33 @@ void IndexThread::execute_postbackup_hook(std::string scriptname, int group, con
 		CloseHandle(pi.hThread);
 	}
 #else
+	std::string fullname = std::string(SYSCONFDIR "/urbackup/") + scriptname;
+	std::string group_str = convert(group);
+	char* const argv[]={ const_cast<char*>(fullname.c_str()), 
+		const_cast<char*>(group_str.c_str()), const_cast<char*>(clientsubname.c_str()), NULL };
+
 	pid_t pid1;
 	pid1 = fork();
 	if( pid1==0 )
 	{
 		setsid();
+
+		int rc = 0;
+#ifdef HAVE_SPAWN_H		
+		const char* envp[] = {NULL};
+		pid_t child_pid;
+		rc = posix_spawn(&child_pid, fullname.c_str(), NULL, NULL, const_cast<char**>(argv), const_cast<char**>(envp));
+#else // HAVE_SPAWN_H
 		pid_t pid2;
 		pid2 = fork();
 		if(pid2==0)
 		{
-			std::string fullname = std::string(SYSCONFDIR "/urbackup/") + scriptname;
-			std::string group_str = convert(group);
-			char* const argv[]={ const_cast<char*>(fullname.c_str()), 
-				const_cast<char*>(group_str.c_str()), const_cast<char*>(clientsubname.c_str()), nullptr };
-			execv(const_cast<char*>(fullname.c_str()), argv);
-			exit(1);
-		}
-		else
-		{
-			exit(1);
-		}
+			rc = execv(const_cast<char*>(fullname.c_str()), argv);
+			if(rc==-1)
+				rc = errno;
+		}	
+#endif // HAVE_SPAWN_H
+		_exit(rc);
 	}
 	else
 	{
@@ -4245,7 +4328,7 @@ std::string IndexThread::sanitizePattern(const std::string &p)
 	return nep;
 }
 
-void IndexThread::readPatterns(int facet_id, int index_group, std::string index_clientsubname,
+void IndexThread::readPatterns(int index_group, std::string index_clientsubname,
 	std::vector<std::string>& exclude_dirs, std::vector<SIndexInclude>& include_dirs,
 	bool& backup_dirs_optional)
 {
@@ -4260,15 +4343,15 @@ void IndexThread::readPatterns(int facet_id, int index_group, std::string index_
 		include_pattern_key="continuous_include_files";
 	}
 
-	std::string settings_fn = "urbackup/data_"+std::to_string(facet_id)+"/settings.cfg";
+	std::string settings_fn = "urbackup/data/settings.cfg";
 	if(!index_clientsubname.empty())
 	{
-		settings_fn = "urbackup/data" + std::to_string(facet_id) + "/settings_"+conv_filename(index_clientsubname)+".cfg";
+		settings_fn = "urbackup/data/settings_"+conv_filename(index_clientsubname)+".cfg";
 	}
 
 	ISettingsReader *curr_settings=Server->createFileSettingsReader(settings_fn);
 	exclude_dirs.clear();
-	if(curr_settings!=nullptr)
+	if(curr_settings!=NULL)
 	{	
 		std::string val;
 		if(curr_settings->getValue(exclude_pattern_key, &val) || curr_settings->getValue(exclude_pattern_key+"_def", &val) )
@@ -4609,7 +4692,7 @@ bool IndexThread::isIncluded(const std::vector<SIndexInclude>& include_dirs, con
 	strupper(&wpath);
 #endif
 	int wpath_level=0;
-	if(adding_worthless!=nullptr)
+	if(adding_worthless!=NULL)
 	{
 		for(size_t i=0;i<wpath.size();++i)
 		{
@@ -4633,7 +4716,7 @@ bool IndexThread::isIncluded(const std::vector<SIndexInclude>& include_dirs, con
 			{
 				return true;
 			}
-			if(adding_worthless!=nullptr)
+			if(adding_worthless!=NULL)
 			{
 				if( include_dirs[i].depth==-1 )
 				{
@@ -4667,7 +4750,7 @@ void IndexThread::start_filesrv(void)
 	else
 	{
 		ISettingsReader *curr_settings=Server->createFileSettingsReader("urbackup/data/settings.cfg");
-		if(curr_settings!=nullptr)
+		if(curr_settings!=NULL)
 		{
 			std::string val;
 			if(curr_settings->getValue("computername", &val)
@@ -4712,6 +4795,7 @@ void IndexThread::start_filesrv(void)
 
 	filesrv=filesrv_fak->createFileServ(curr_tcpport, curr_udpport, name, use_fqdn,
 		backgroundBackupsEnabled(std::string()));
+	filesrv->shareDir("urbackup", Server->getServerWorkingDir()+"/urbackup/data", std::string(), false);
 
 	ServerIdentityMgr::setFileServ(filesrv);
 	ServerIdentityMgr::loadServerIdentities();
@@ -4902,7 +4986,7 @@ std::string IndexThread::getSHA256(const std::string& fn)
 
 	IFile * f=Server->openFile(os_file_prefix(fn), MODE_READ_SEQUENTIAL_BACKUP);
 
-	if(f==nullptr)
+	if(f==NULL)
 	{
 		return std::string();
 	}
@@ -5740,8 +5824,8 @@ std::string IndexThread::getShaBinary(const std::string& fn)
 	}
 	else if (sha_version == 528)
 	{
-		TreeHash treehash(index_hdat_file.get() == nullptr ? nullptr : client_hash.get());
-		if (!getShaBinary(fn, treehash, index_hdat_file.get() != nullptr))
+		TreeHash treehash(index_hdat_file.get() == NULL ? NULL : client_hash.get());
+		if (!getShaBinary(fn, treehash, index_hdat_file.get() != NULL))
 		{
 			return std::string();
 		}
@@ -5774,31 +5858,14 @@ bool IndexThread::backgroundBackupsEnabled(const std::string& clientsubname)
 		settings_fn = "urbackup/data/settings_"+conv_filename(clientsubname)+".cfg";
 	}
 
-	std::unique_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
-	if(curr_settings.get()!=nullptr)
+	std::auto_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
+	if(curr_settings.get()!=NULL)
 	{
 		std::string background_backups;
 		if(curr_settings->getValue("background_backups", &background_backups)
 			|| curr_settings->getValue("background_backups_def", &background_backups) )
 		{
-			return background_backups!="false";
-		}
-	}
-	return true;
-}
-
-bool IndexThread::pauseIfWindowsUnlocked()
-{
-	std::string settings_fn = "urbackup/data/settings.cfg";
-
-	std::unique_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
-	if (curr_settings.get() != nullptr)
-	{
-		std::string pause_if_windows_unlocked;
-		if (curr_settings->getValue("pause_if_windows_unlocked", &pause_if_windows_unlocked)
-			|| curr_settings->getValue("pause_if_windows_unlocked_def", &pause_if_windows_unlocked))
-		{
-			return pause_if_windows_unlocked == "true";
+			return background_backups=="true";
 		}
 	}
 	return false;
@@ -5806,7 +5873,7 @@ bool IndexThread::pauseIfWindowsUnlocked()
 
 void IndexThread::writeTokens()
 {
-	std::unique_ptr<ISettingsReader> access_keys(
+	std::auto_ptr<ISettingsReader> access_keys(
 		Server->createFileSettingsReader("urbackup/access_keys.properties"));
 
 	std::string access_keys_data;
@@ -5980,7 +6047,7 @@ int IndexThread::execute_preimagebackup_hook(bool incr, std::string server_token
 	script_name = SYSCONFDIR "/urbackup/preimagebackup";
 #endif
 
-	return execute_hook(script_name, incr, server_token, nullptr);
+	return execute_hook(script_name, incr, server_token, NULL);
 }
 
 bool IndexThread::addBackupScripts(std::fstream& outfile)
@@ -6052,8 +6119,8 @@ int IndexThread::get_db_tgroup()
 
 bool IndexThread::nextLastFilelistItem(SFile& data, str_map* extra, bool with_up)
 {
-	if (last_filelist.get() == nullptr
-		|| last_filelist->f==nullptr)
+	if (last_filelist.get() == NULL
+		|| last_filelist->f==NULL)
 	{
 		return false;
 	}
@@ -6119,7 +6186,7 @@ bool IndexThread::nextLastFilelistItem(SFile& data, str_map* extra, bool with_up
 
 void IndexThread::addFromLastUpto(const std::string& fname, bool isdir, size_t depth, bool finish, std::fstream &outfile)
 {
-	if (!index_follow_last || last_filelist.get()==nullptr)
+	if (!index_follow_last || last_filelist.get()==NULL)
 	{
 		return;
 	}
@@ -6170,7 +6237,7 @@ void IndexThread::addFromLastUpto(const std::string& fname, bool isdir, size_t d
 
 void IndexThread::addFromLastLiftDepth(size_t depth, std::fstream & outfile)
 {
-	if (!index_follow_last || last_filelist.get() == nullptr)
+	if (!index_follow_last || last_filelist.get() == NULL)
 	{
 		return;
 	}
@@ -6308,17 +6375,15 @@ bool IndexThread::volIsEnabled(std::string settings_val, std::string volume)
 
 bool IndexThread::cbtIsEnabled(std::string clientsubname, std::string volume)
 {
-	return false;
-
-	std::string settings_fn = "urbackup/data_"+convert(index_facet_id)+"/settings.cfg";
+	std::string settings_fn = "urbackup/data/settings.cfg";
 
 	if (!clientsubname.empty())
 	{
-		settings_fn = "urbackup/data_"+ convert(index_facet_id) + "/settings_" + conv_filename(clientsubname) + ".cfg";
+		settings_fn = "urbackup/data/settings_" + conv_filename(clientsubname) + ".cfg";
 	}
 
-	std::unique_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
-	if (curr_settings.get() != nullptr)
+	std::auto_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
+	if (curr_settings.get() != NULL)
 	{
 		std::string cbt_volumes;
 		if (curr_settings->getValue("cbt_volumes", &cbt_volumes)
@@ -6339,8 +6404,8 @@ bool IndexThread::crashPersistentCbtIsEnabled(std::string clientsubname, std::st
 		settings_fn = "urbackup/data/settings_" + conv_filename(clientsubname) + ".cfg";
 	}
 
-	std::unique_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
-	if (curr_settings.get() != nullptr)
+	std::auto_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
+	if (curr_settings.get() != NULL)
 	{
 		std::string cbt_crash_persistent_volumes;
 		if (curr_settings->getValue("cbt_crash_persistent_volumes", &cbt_crash_persistent_volumes)
@@ -6390,7 +6455,7 @@ namespace
 
 	PURBCT_BITMAP_DATA readBitmap(std::string fn, std::vector<char>& data)
 	{
-		std::unique_ptr<IFile> f(Server->openFile(fn, MODE_READ));
+		std::auto_ptr<IFile> f(Server->openFile(fn, MODE_READ));
 
 		if (f.get() == NULL)
 		{
@@ -6501,7 +6566,7 @@ namespace
 			}
 		}
 
-		std::unique_ptr<IFile> f(Server->openFile(fn+".new", MODE_WRITE));
+		std::auto_ptr<IFile> f(Server->openFile(fn+".new", MODE_WRITE));
 
 		if (f.get() == NULL)
 		{
@@ -6710,7 +6775,7 @@ inline int64 roundDown(int64 numToRound, int64 multiple)
 
 bool  IndexThread::addFileToCbt(const std::string& fpath, const DWORD& blocksize, const PURBCT_BITMAP_DATA& bitmap_data)
 {
-	std::unique_ptr<IFsFile> hive_file(Server->openFile(fpath, MODE_READ));
+	std::auto_ptr<IFsFile> hive_file(Server->openFile(fpath, MODE_READ));
 
 	if (hive_file.get() != nullptr)
 	{
@@ -6813,7 +6878,7 @@ void IndexThread::run_sc_refs_cleanup()
 						for (std::map<std::string, SCDirs*>::iterator it = scdirs_server.begin();
 							it != scdirs_server.end(); ++it)
 						{
-							if (filesrv != nullptr
+							if (filesrv != NULL
 								&& filesrv->hasActiveTransfersGen(it->second->dir, it_scdirs->first.start_token, curr->cleanup_gen))
 							{
 								VSSLog(it->first + " orig_target=" + it->second->orig_target + " target=" + it->second->target + " gen="+convert(curr->cleanup_gen)+" still in use. Not releasing.", LL_DEBUG);
@@ -6846,7 +6911,7 @@ void IndexThread::run_sc_refs_cleanup()
 							for (std::map<std::string, SCDirs*>::iterator it = scdirs_server.begin();
 								it != scdirs_server.end(); ++it)
 							{
-								if (it->second->ref != nullptr
+								if (it->second->ref != NULL
 									&& it->second->ref != curr
 									&& it->second->ref->ssetid == ssetid)
 								{
@@ -6885,7 +6950,7 @@ void IndexThread::run_sc_refs_cleanup()
 								scd.fileserv = true;
 							}
 
-							if (filesrv != nullptr
+							if (filesrv != NULL
 								&& filesrv->hasActiveTransfersGen(scd.dir, starttoken, curr->cleanup_gen))
 							{
 								VSSLog(scd.dir + " orig_target=" + scd.orig_target + " target=" + scd.target + " starttoken="+ starttoken+ " gen="+convert(curr->cleanup_gen)+" still in use. Not releasing. (2)", LL_DEBUG);
@@ -7329,7 +7394,7 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 			return false;
 		}
 
-		std::unique_ptr<IFsFile> hdat_img(ImageThread::openHdatF(volume, false));
+		std::auto_ptr<IFsFile> hdat_img(ImageThread::openHdatF(volume, false));
 
 		bool concurrent_active = false;
 
@@ -7429,7 +7494,7 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 			++index_hdat_sequence_ids[strlower(volume)];
 		}
 
-		std::unique_ptr<IFsFile> hdat_file(Server->openFile("urbackup\\hdat_file_" + conv_filename(strlower(volume)) + ".dat", MODE_RW_CREATE_DELETE));
+		std::auto_ptr<IFsFile> hdat_file(Server->openFile("urbackup\\hdat_file_" + conv_filename(strlower(volume)) + ".dat", MODE_RW_CREATE_DELETE));
 
 		if (hdat_file.get() == NULL)
 		{
@@ -7517,6 +7582,8 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 		Server->deleteFile("urbackup\\hdat_file_" + conv_filename(strlower(volume)) + ".cbt");
 	} //for_image_backup
 
+	Server->deleteFile("urbackup\\hdat_other_" + conv_filename(strlower(volume)) + ".cbt");
+
 #ifndef _DEBUG
 	b = DeviceIoControl(hVolume, IOCTL_URBCT_RESET_FINISH, NULL, 0, NULL, 0, &bytesReturned, NULL);
 #endif
@@ -7544,10 +7611,10 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 		Server->deleteFile("urbackup/hdat_img_" + conv_filename(fs_dev) + ".dat");
 	}
 
-	std::unique_ptr<IFsFile> hdat_file(Server->openFile("urbackup/hdat_file_" + conv_filename(fs_dev) + ".dat", MODE_RW_CREATE_DELETE));
-	std::unique_ptr<IFsFile> hdat_img(ImageThread::openHdatF(fs_dev, false));
+	std::auto_ptr<IFsFile> hdat_file(Server->openFile("urbackup/hdat_file_" + conv_filename(fs_dev) + ".dat", MODE_RW_CREATE_DELETE));
+	std::auto_ptr<IFsFile> hdat_img(ImageThread::openHdatF(fs_dev, false));
 
-	if (hdat_img.get() == nullptr && hdat_file.get() == nullptr)
+	if (hdat_img.get() == NULL && hdat_file.get() == NULL)
 	{
 		VSSLog("Error opening img and file backup hdat file", LL_ERROR);
 		return false;
@@ -7561,21 +7628,21 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 		return false;
 	}
 
-	std::unique_ptr<IFile> volfile(Server->openFile(orig_dev, MODE_READ_DEVICE));
+	std::auto_ptr<IFile> volfile(Server->openFile(orig_dev, MODE_READ_DEVICE));
 
-	if (volfile.get() == nullptr)
+	if (volfile.get() == NULL)
 	{
 		VSSLog("Error opening volume file " + orig_dev, LL_ERROR);
 		return false;
 	}
 
 
-	if (hdat_file.get() != nullptr)
+	if (hdat_file.get() != NULL)
 	{
 		hdat_file->Resize(((volfile->Size() + c_checkpoint_dist - 1) / c_checkpoint_dist) * (sizeof(_u16) + chunkhash_single_size));
 	}
 
-	if (hdat_img.get() != nullptr)
+	if (hdat_img.get() != NULL)
 	{
 		hdat_img->Resize(sizeof(shadow_id) + ((volfile->Size() + c_checkpoint_dist - 1) / c_checkpoint_dist) * SHA256_DIGEST_SIZE);
 	}
@@ -7598,7 +7665,7 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 			}
 		}
 
-		if (hdat_img.get() != nullptr)
+		if (hdat_img.get() != NULL)
 		{
 			if (hdat_img->Write(0, reinterpret_cast<char*>(&shadow_id), sizeof(shadow_id)) != sizeof(shadow_id))
 			{
@@ -7612,13 +7679,13 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 			}
 		}
 
-		if (hdat_file.get() != nullptr)
+		if (hdat_file.get() != NULL)
 		{
 			IScopedLock lock(cbt_shadow_id_mutex);
 			++index_hdat_sequence_ids[strlower(volume)];
 		}
 
-		if (hdat_img.get() != nullptr)
+		if (hdat_img.get() != NULL)
 		{
 			if (!hdat_img->Sync())
 			{
@@ -7627,7 +7694,7 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 			}
 		}
 
-		if (hdat_file.get() != nullptr)
+		if (hdat_file.get() != NULL)
 		{
 			if (!hdat_file->Sync())
 			{
@@ -7667,7 +7734,7 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 
 	if (ret)
 	{
-		if (hdat_img.get() != nullptr)
+		if (hdat_img.get() != NULL)
 		{
 			if (!hdat_img->Sync())
 			{
@@ -7676,7 +7743,7 @@ bool IndexThread::finishCbt(std::string volume, int shadow_id, std::string snap_
 			}
 		}
 
-		if (hdat_file.get() != nullptr)
+		if (hdat_file.get() != NULL)
 		{
 			if (!hdat_file->Sync())
 			{
@@ -7743,9 +7810,9 @@ bool IndexThread::finishCbtDatto(IFile* volfile, IFsFile* hdat_file, IFsFile* hd
 		return false;
 	}
 
-	std::unique_ptr<IFile> cowfile(Server->openFile(cbt_file, MODE_READ));
+	std::auto_ptr<IFile> cowfile(Server->openFile(cbt_file, MODE_READ));
 
-	if (cowfile.get() == nullptr)
+	if (cowfile.get() == NULL)
 	{
 		VSSLog("Error opening datto cow file at " + cbt_file, LL_ERROR);
 		return false;
@@ -7781,7 +7848,7 @@ bool IndexThread::finishCbtDatto(IFile* volfile, IFsFile* hdat_file, IFsFile* hd
 		return false;
 	}
 
-	if (hdat_img != nullptr)
+	if (hdat_img != NULL)
 	{
 		if (hdat_img->Write(0, reinterpret_cast<char*>(&shadow_id), sizeof(shadow_id)) != sizeof(shadow_id))
 		{
@@ -7795,7 +7862,7 @@ bool IndexThread::finishCbtDatto(IFile* volfile, IFsFile* hdat_file, IFsFile* hd
 		}
 	}
 
-	if (hdat_file != nullptr)
+	if (hdat_file != NULL)
 	{
 		IScopedLock lock(cbt_shadow_id_mutex);
 		++index_hdat_sequence_ids[strlower(volume)];
@@ -7831,7 +7898,7 @@ bool IndexThread::finishCbtDatto(IFile* volfile, IFsFile* hdat_file, IFsFile* hd
 
 			int64 cbt_pos = (i * dbd_block_size) / c_checkpoint_dist;
 
-			if (block_map && hdat_img != nullptr)
+			if (block_map && hdat_img != NULL)
 			{
 				if (!punchHoleOrZero(hdat_img, sizeof(shadow_id) + cbt_pos * SHA256_DIGEST_SIZE,
 					zero_sha, zero_sha_read, sizeof(zero_sha)))
@@ -7840,7 +7907,7 @@ bool IndexThread::finishCbtDatto(IFile* volfile, IFsFile* hdat_file, IFsFile* hd
 				}
 			}
 
-			if (hdat_file != nullptr)
+			if (hdat_file != NULL)
 			{
 				bool has_bit = (block_map > 0);
 				if (has_bit
@@ -7884,10 +7951,10 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 	int64& hdat_file_era, int64& hdat_img_era)
 {
 	hdat_file_era = -1;
-	if(hdat_file!=nullptr)
+	if(hdat_file!=NULL)
 		hdat_file_era = watoi64(trim(getFile(hdat_file->getFilename() + ".era")));
 	hdat_img_era = -1;
-	if(hdat_img!=nullptr)
+	if(hdat_img!=NULL)
 		hdat_img_era = watoi64(trim(getFile(hdat_img->getFilename() + ".era")));
 
 	std::string dev_file = getMountDevice(volume);
@@ -7909,7 +7976,7 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 		}
 	}
 
-	if (hdat_img != nullptr)
+	if (hdat_img != NULL)
 	{
 		if (hdat_img->Write(0, reinterpret_cast<char*>(&shadow_id), sizeof(shadow_id)) != sizeof(shadow_id))
 		{
@@ -7923,7 +7990,7 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 		}
 	}
 
-	if (hdat_file != nullptr)
+	if (hdat_file != NULL)
 	{
 		IScopedLock lock(cbt_shadow_id_mutex);
 		++index_hdat_sequence_ids[strlower(volume)];
@@ -7938,7 +8005,7 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 #ifdef __ANDROID__
 	POFILE* pin = NULL;
 #endif
-	FILE* in = nullptr;
+	FILE* in = NULL;
 
 	std::string cmd = "era_dump --logical \"" + cbt_file + "\"";
 #ifdef __ANDROID__
@@ -7946,11 +8013,11 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 	if (pin != NULL) in = pin->fp;
 #else
 	in = _popen(cmd.c_str(), "re");
-	if(in==nullptr)
+	if(in==NULL)
 		in = _popen(cmd.c_str(), "r");
 #endif
 
-	if (in == nullptr)
+	if (in == NULL)
 	{
 		VSSLog("Error running command \"era_dump --logical "+cbt_file+"\"", LL_WARNING);
 		return false;
@@ -8133,7 +8200,7 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 
 					int64 cbt_pos = (block_nr * block_size) / c_checkpoint_dist;
 
-					if (block_era >= hdat_img_era && hdat_img != nullptr)
+					if (block_era >= hdat_img_era && hdat_img != NULL)
 					{
 						if (!punchHoleOrZero(hdat_img, sizeof(shadow_id) + cbt_pos * SHA256_DIGEST_SIZE,
 								zero_sha, zero_sha_read, sizeof(zero_sha)))
@@ -8142,7 +8209,7 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 						}
 					}
 
-					if (hdat_file != nullptr)
+					if (hdat_file != NULL)
 					{
 						bool has_bit = (block_era >= hdat_file_era);
 						if (has_bit
@@ -8200,9 +8267,9 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 		return false;
 	}
 
-	if (hdat_file != nullptr)
+	if (hdat_file != NULL)
 		hdat_file_era = current_era;
-	if (hdat_img != nullptr)
+	if (hdat_img != NULL)
 		hdat_img_era = current_era;
 
 	return true;
@@ -8211,11 +8278,11 @@ bool IndexThread::finishCbtEra(IFsFile* hdat_file, IFsFile* hdat_img, std::strin
 
 bool IndexThread::finishCbtEra2(IFsFile* hdat, int64 hdat_era)
 {
-	if (hdat != nullptr)
+	if (hdat != NULL)
 	{
-		std::unique_ptr<IFile> hdat_file_era_new(Server->openFile(hdat->getFilename() + ".era.new", MODE_WRITE));
+		std::auto_ptr<IFile> hdat_file_era_new(Server->openFile(hdat->getFilename() + ".era.new", MODE_WRITE));
 
-		if (hdat_file_era_new.get() == nullptr)
+		if (hdat_file_era_new.get() == NULL)
 		{
 			VSSLog("Error opening file at " + hdat->getFilename() + ".era.new. " + os_last_error_str(), LL_ERROR);
 			return false;
@@ -8348,7 +8415,7 @@ void IndexThread::updateCbt()
 	std::set<std::string> vols;
 
 	std::string settings_fn = "urbackup/data/settings.cfg";
-	std::unique_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
+	std::auto_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
 	std::string volumes;
 	if (curr_settings.get() != NULL)
 	{
@@ -8386,9 +8453,6 @@ void IndexThread::updateCbt()
 
 	for (size_t i = 0; i < backup_dirs.size(); ++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		std::string cvol = trim(backup_dirs[i].path);
 		if (!normalizeVolume(cvol))
 			continue;
@@ -8403,25 +8467,29 @@ void IndexThread::updateCbt()
 		}
 	}
 
-	if ((curr_settings.get() == NULL || volumes.empty())
-		&& backup_dirs.empty())
+	const bool enable_all = (curr_settings.get() == NULL || volumes.empty())
+		&& backup_dirs.empty();
+
+	volumes = get_all_volumes_list(true, volumes_cache);
+
+	std::vector<std::string> ret;
+	Tokenize(volumes, ret, ";,");
+	for (size_t i = 0; i<ret.size(); ++i)
 	{
-		volumes = get_all_volumes_list(true, volumes_cache);
+		std::string cvol = trim(ret[i]);
+		if (!normalizeVolume(cvol))
+			continue;
+		cvol = strlower(cvol);
 
-		std::vector<std::string> ret;
-		Tokenize(volumes, ret, ";,");
-		for (size_t i = 0; i<ret.size(); ++i)
+		if (vols.find(cvol) == vols.end())
 		{
-			std::string cvol = trim(ret[i]);
-			if (!normalizeVolume(cvol))
-				continue;
-			cvol = strlower(cvol);
+			const bool vol_enabled = cbtIsEnabled(std::string(), cvol);
 
-			if (vols.find(cvol) == vols.end())
-			{
-				enableCbtVol(cvol, cbtIsEnabled(std::string(), cvol), false);
-				vols.insert(cvol);
-			}
+			if (vol_enabled && !enable_all)
+				continue;
+
+			enableCbtVol(cvol, vol_enabled, false);
+			vols.insert(cvol);
 		}
 	}
 #endif
@@ -8432,9 +8500,9 @@ void IndexThread::createMd5sumsFile(const std::string & path, std::string vol)
 	normalizeVolume(vol);
 
 	std::string fn = "md5sums-"+conv_filename(vol)+"-"+db->Read("SELECT strftime('%Y-%m-%d %H-%M', 'now', 'localtime') AS fn")[0]["fn"]+".txt";
-	std::unique_ptr<IFile> output_f(Server->openFile(fn, MODE_WRITE));
+	std::auto_ptr<IFile> output_f(Server->openFile(fn, MODE_WRITE));
 
-	if (output_f.get() == nullptr)
+	if (output_f.get() == NULL)
 	{
 		Server->Log("Error opening md5sums file. " + os_last_error_str(), LL_ERROR);
 	}
@@ -8457,9 +8525,9 @@ void IndexThread::createMd5sumsFile(const std::string & path, const std::string&
 		}
 		else if (!files[i].isspecialf)
 		{
-			std::unique_ptr<IFile> f(Server->openFile(os_file_prefix(path + os_file_sep() + files[i].name), MODE_READ_SEQUENTIAL_BACKUP));
+			std::auto_ptr<IFile> f(Server->openFile(os_file_prefix(path + os_file_sep() + files[i].name), MODE_READ_SEQUENTIAL_BACKUP));
 
-			if (f.get() == nullptr)
+			if (f.get() == NULL)
 			{
 				Server->Log("Error opening file \"" + path + os_file_sep() + files[i].name + "\" for creating md5sums. " + os_last_error_str(), LL_ERROR);
 			}
@@ -8522,7 +8590,7 @@ bool IndexThread::getAbsSymlinkTarget( const std::string& symlink, const std::st
 			target = orig_path + os_file_sep() + target;
 		}
 
-		target = os_get_final_path(target);
+		target = os_get_final_path_str(target);
 	}
 
 	std::string lower_target;
@@ -8546,9 +8614,6 @@ bool IndexThread::getAbsSymlinkTarget( const std::string& symlink, const std::st
 
 	for(size_t i=0;i<backup_dirs.size();++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		if(backup_dirs[i].group!=index_group)
 			continue;
 
@@ -8639,7 +8704,7 @@ void IndexThread::addSymlinkBackupDir( const std::string& target, std::string& o
 
 	SBackupDir backup_dir;
 
-	cd->addBackupDir(name, target, index_server_default, index_flags, index_group, 1, index_facet_id);
+	cd->addBackupDir(name, target, index_server_default, index_flags, index_group, 1);
 
 	backup_dir.id=static_cast<int>(db->getLastInsertID());
 
@@ -8669,9 +8734,6 @@ bool IndexThread::backupNameInUse( const std::string& name )
 {
 	for(size_t i=0;i<backup_dirs.size();++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		if(backup_dirs[i].tname==name)
 		{
 			return true;
@@ -8684,12 +8746,6 @@ void IndexThread::removeUnconfirmedSymlinkDirs(size_t off)
 {
 	for(size_t i=off;i<backup_dirs.size();)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-		{
-			++i;
-			continue;
-		}
-
 		if(index_group == backup_dirs[i].group)
 		{
 			if(backup_dirs[i].symlinked
@@ -8709,7 +8765,7 @@ void IndexThread::removeUnconfirmedSymlinkDirs(size_t off)
 				removeDir(starttoken, backup_dirs[i].tname);
 				removeDir(std::string(), backup_dirs[i].tname);
 
-				if(filesrv!=nullptr)
+				if(filesrv!=NULL)
 				{
 					filesrv->removeDir(backup_dirs[i].tname, starttoken);
 					filesrv->removeDir(backup_dirs[i].tname, std::string());
@@ -8731,21 +8787,34 @@ void IndexThread::removeUnconfirmedSymlinkDirs(size_t off)
 void IndexThread::filterEncryptedFiles(const std::string & dir, const std::string& orig_dir, std::vector<SFile>& files)
 {
 	bool has_encrypted = false;
+	bool has_dataless = false;
 	for (size_t i = 0; i < files.size(); ++i)
 	{
 		if (files[i].isencrypted)
 		{
 			has_encrypted = true;
 		}
+		if (files[i].isdataless)
+		{
+			has_dataless = true;
+		}
 	}
 
-	if (has_encrypted)
+	if (has_encrypted || has_dataless)
 	{
 		std::vector<SFile> new_files;
 
 		for (size_t i = 0; i < files.size(); ++i)
 		{
-			if (files[i].isencrypted
+			if (files[i].isdataless)
+			{
+				if(!dataless_warning_logged)
+				{
+					dataless_warning_logged=true;
+					VSSLog("Not backing up cloud storage files (file \"" + orig_dir + os_file_sep() + files[i].name + "\" is e.g. on iCloud or OneDrive -- not informing about other files)", LL_INFO);
+				}
+			}
+			else if (files[i].isencrypted
 				&& files[i].isdir)
 			{
 				bool has_error = false;
@@ -8943,7 +9012,7 @@ bool IndexThread::start_shadowcopy_lin( SCDirs * dir, std::string &wpath, bool f
 
 	if (scriptlocation.empty())
 	{
-		if (not_configured != nullptr)
+		if (not_configured != NULL)
 		{
 			*not_configured = true;
 		}
@@ -9003,7 +9072,7 @@ bool IndexThread::start_shadowcopy_lin( SCDirs * dir, std::string &wpath, bool f
 
 	if (trim(snapshot_target) == "none")
 	{
-		if (not_configured != nullptr)
+		if (not_configured != NULL)
 		{
 			*not_configured = true;
 		}
@@ -9019,8 +9088,8 @@ bool IndexThread::start_shadowcopy_lin( SCDirs * dir, std::string &wpath, bool f
 	for (size_t i = 0; i < flock_files.size(); ++i)
 	{
 		std::string flock_fp = flock_files[i].fn;
-		std::unique_ptr<IFsFile> flock_f(Server->openFile(flock_fp, MODE_RW));
-		if (flock_f.get() == nullptr)
+		std::auto_ptr<IFsFile> flock_f(Server->openFile(flock_fp, MODE_RW));
+		if (flock_f.get() == NULL)
 		{
 			VSSLog("Error opening file to lock: " + flock_fp + ". " + os_last_error_str(), LL_WARNING);
 		}
@@ -9126,7 +9195,7 @@ bool IndexThread::start_shadowcopy_lin( SCDirs * dir, std::string &wpath, bool f
 		}
 	}
 
-	if(onlyref!=nullptr)
+	if(onlyref!=NULL)
 	{
 		*onlyref=false;
 	}
@@ -9140,7 +9209,7 @@ std::string IndexThread::get_snapshot_script_location(const std::string & name, 
 	{
 		return std::string();
 	}
-	std::unique_ptr<ISettingsReader> settings(Server->createFileSettingsReader(conffile));
+	std::auto_ptr<ISettingsReader> settings(Server->createFileSettingsReader(conffile));
 
 	std::string ret;
 	if (!index_clientsubname.empty()
@@ -9167,15 +9236,6 @@ bool IndexThread::get_volumes_mounted_locally()
 
 #endif //!_WIN32
 
-bool IndexThread::isWindowsLocked()
-{
-#ifdef _WIN32
-	return is_win_locked();
-#else
-	return false;
-#endif
-}
-
 std::string IndexThread::escapeDirParam( const std::string& dir )
 {
 	return "\""+greplace("\"", "\\\"", dir)+"\"";
@@ -9193,7 +9253,7 @@ int IndexThread::getShadowId(const std::string & volume, IFile* hdat_img)
 	}
 	else
 	{
-		if (hdat_img != nullptr)
+		if (hdat_img != NULL)
 		{
 			int shadow_id;
 			if (hdat_img->Read(0, reinterpret_cast<char*>(&shadow_id), sizeof(shadow_id)) == sizeof(shadow_id))
@@ -9239,21 +9299,18 @@ void IndexThread::addScRefs(VSS_ID ssetid, std::vector<SCRef*>& out)
 
 void IndexThread::openCbtHdatFile(SCRef* ref, const std::string& sharename, const std::string & volume)
 {
-	if (ref!=nullptr
-		&& ref->cbt)
-	{
 #ifdef _WIN32
-		std::string vol = volume;
-		normalizeVolume(vol);
-		vol = strlower(vol);
+	std::string vol = volume;
+	normalizeVolume(vol);
+	vol = strlower(vol);
 #else
-		std::string vol = getMountDevice(volume);
-		if(vol.empty())
-		{
-			return;
-		}
+	std::string vol = getMountDevice(volume);
 #endif
 
+	if (ref!=NULL
+		&& ref->cbt
+		&& !vol.empty())
+	{
 		index_hdat_file.reset(Server->openFile("urbackup/hdat_file_" + conv_filename(vol) + ".dat", MODE_RW_CREATE_DELETE));
 		index_hdat_fs_block_size = -1;
 
@@ -9273,11 +9330,11 @@ void IndexThread::openCbtHdatFile(SCRef* ref, const std::string& sharename, cons
 #endif
 		size_t* seq_id = &index_hdat_sequence_ids[strlower(vol)];
 		if (index_hdat_file.get()
-			&& filesrv != nullptr
+			&& filesrv != NULL
 			&& index_hdat_fs_block_size>0)
 		{
 			IFsFile* f = Server->openFile(index_hdat_file->getFilename(), MODE_RW_DELETE);
-			if (f != nullptr)
+			if (f != NULL)
 			{
 				filesrv->setCbtHashFile(starttoken + "|" + sharename, std::string(),
 					IFileServ::CbtHashFileInfo(f, index_hdat_fs_block_size, seq_id, *seq_id));
@@ -9287,10 +9344,10 @@ void IndexThread::openCbtHdatFile(SCRef* ref, const std::string& sharename, cons
 		client_hash.reset(new ClientHash(index_hdat_file.get(), false, index_hdat_fs_block_size,
 			seq_id, *seq_id));
 
-		if (phash_queue != nullptr)
+		if (phash_queue != NULL)
 		{
 			IFsFile* f = Server->openFile(index_hdat_file->getFilename(), MODE_RW_DELETE);
-			if (f != nullptr)
+			if (f != NULL)
 			{
 				CWData data;
 				data.addChar(ID_CBT_DATA);
@@ -9315,9 +9372,9 @@ void IndexThread::openCbtHdatFile(SCRef* ref, const std::string& sharename, cons
 	else
 	{
 		index_hdat_file.reset();
-		client_hash.reset(new ClientHash(nullptr, false, 0, nullptr, 0));
+		client_hash.reset(new ClientHash(NULL, false, 0, NULL, 0));
 
-		if (phash_queue != nullptr)
+		if (phash_queue != NULL)
 		{
 			CWData data;
 			data.addChar(ID_INIT_HASH);
@@ -9347,8 +9404,8 @@ void IndexThread::readSnapshotGroups()
 	image_snapshot_groups.clear();
 	file_snapshot_groups.clear();
 
-	std::unique_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
-	if (curr_settings.get() != nullptr)
+	std::auto_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
+	if (curr_settings.get() != NULL)
 	{
 		readSnapshotGroup(curr_settings.get(), "image_snapshot_groups", image_snapshot_groups);
 		readSnapshotGroup(curr_settings.get(), "file_snapshot_groups", file_snapshot_groups);
@@ -9401,9 +9458,6 @@ void IndexThread::readSnapshotGroup(ISettingsReader *curr_settings, const std::s
 				std::vector<std::string> groups_mem;
 				for (size_t i = 0; i < backup_dirs.size(); ++i)
 				{
-					if (backup_dirs[i].facet != index_facet_id)
-						continue;
-
 					if (backup_dirs[i].group == index_group)
 					{
 						std::string vol = backup_dirs[i].path;
@@ -9487,7 +9541,7 @@ std::vector<std::string> IndexThread::getSnapshotGroup(std::string volume, bool 
 std::string IndexThread::otherVolumeInfo(SCDirs * dir, bool onlyref)
 {
 	if (onlyref
-		|| dir->ref==nullptr)
+		|| dir->ref==NULL)
 	{
 		return std::string();
 	}
@@ -9521,8 +9575,8 @@ void IndexThread::postSnapshotProcessing(SCDirs* scd, bool full_backup)
 		std::sort(open_files.begin(), open_files.end());
 	}
 
-	if (scd!=nullptr 
-		&& scd->ref != nullptr)
+	if (scd!=NULL 
+		&& scd->ref != NULL)
 	{
 		for (size_t k = 0; k < sc_refs.size(); ++k)
 		{
@@ -9562,9 +9616,6 @@ void IndexThread::postSnapshotProcessing(SCRef * ref, bool full_backup)
 	std::vector<int> db_tgroup;
 	for (size_t i = 0; i < backup_dirs.size(); ++i)
 	{
-		if (backup_dirs[i].facet != index_facet_id)
-			continue;
-
 		std::string path = backup_dirs[i].path;
 #ifdef _WIN32
 		path = strlower(path);
@@ -9609,7 +9660,7 @@ void IndexThread::postSnapshotProcessing(SCRef * ref, bool full_backup)
 
 void IndexThread::initParallelHashing(const std::string & async_ticket)
 {
-	if (phash_queue != nullptr
+	if (phash_queue != NULL
 		&& phash_queue->deref())
 	{
 		delete phash_queue;
@@ -9622,9 +9673,9 @@ void IndexThread::initParallelHashing(const std::string & async_ticket)
 		settings_fn = "urbackup/data/settings_" + conv_filename(index_clientsubname) + ".cfg";
 	}
 
-	std::unique_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
+	std::auto_ptr<ISettingsReader> curr_settings(Server->createFileSettingsReader(settings_fn));
 	size_t client_hash_threads = 1;
-	if (curr_settings.get() != nullptr)
+	if (curr_settings.get() != NULL)
 	{
 		client_hash_threads = curr_settings->getValue("client_hash_threads", 1);
 	}
@@ -9652,8 +9703,8 @@ bool IndexThread::addToPhashQueue(CWData & data)
 
 bool IndexThread::commitPhashQueue()
 {
-	if (phash_queue == nullptr
-		|| phash_queue->phash_queue==nullptr)
+	if (phash_queue == NULL
+		|| phash_queue->phash_queue==NULL)
 		return true;
 
 	bool ret = phash_queue->phash_queue->Write(phash_queue_write_pos, phash_queue_buffer.data(), static_cast<_u32>(phash_queue_buffer.size())) == phash_queue_buffer.size();

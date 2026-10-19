@@ -24,7 +24,7 @@
 
 
 LRUMemCache::LRUMemCache(size_t buffersize, size_t nbuffers, size_t p_n_threads)
-	: buffersize(buffersize), nbuffers(nbuffers), callback(nullptr),
+	: buffersize(buffersize), nbuffers(nbuffers), callback(NULL),
 	mutex(Server->createMutex()), cond(Server->createCondition()), n_threads(p_n_threads),
 	do_quit(false), n_threads_working(0), cond_wait(Server->createCondition()), wait_work(false)
 {
@@ -50,7 +50,7 @@ char* LRUMemCache::get( __int64 offset, size_t& bsize )
 		}
 	}
 
-	return nullptr;
+	return NULL;
 }
 
 bool LRUMemCache::put( __int64 offset, const char* buffer, size_t bsize )
@@ -76,6 +76,8 @@ bool LRUMemCache::put( __int64 offset, const char* buffer, size_t bsize )
 	}
 
 	SCacheItem newItem = createInt(offset);
+
+	memset(newItem.buffer, 0, buffersize);
 
 	size_t innerOffset = static_cast<size_t>(offset-newItem.offset);
 
@@ -132,7 +134,7 @@ void LRUMemCache::operator()()
 		SCacheItem item = evictedItems.back();
 		evictedItems.pop_back();
 		++n_threads_working;
-		lock.relock(nullptr);
+		lock.relock(NULL);
 
 		callback->evictFromLruCache(item);
 
@@ -150,7 +152,7 @@ char* LRUMemCache::evict( SCacheItem& item, bool deleteBuffer )
 {
 	if (deleteBuffer)
 	{
-		if (callback != nullptr)
+		if (callback != NULL)
 		{
 			callback->evictFromLruCache(item);
 		}
@@ -159,13 +161,13 @@ char* LRUMemCache::evict( SCacheItem& item, bool deleteBuffer )
 			delete[] item.buffer;
 		}
 
-		return nullptr;
+		return NULL;
 	}
 	else
 	{
-		if (callback == nullptr)
+		if (callback == NULL)
 		{
-			return nullptr;
+			return NULL;
 		}
 
 		IScopedLock lock(mutex.get());
@@ -192,7 +194,7 @@ char* LRUMemCache::getLruItemBuffer(IScopedLock& lock)
 		lruItemBuffers.pop_back();
 		return ret;
 	}
-	lock.relock(nullptr);
+	lock.relock(NULL);
 	return new char[buffersize];
 }
 
@@ -235,7 +237,7 @@ void LRUMemCache::waitThreadWork()
 
 SCacheItem LRUMemCache::createInt( __int64 offset )
 {
-	char* buffer=nullptr;
+	char* buffer=NULL;
 	if(lruItems.size()>=nbuffers)
 	{
 		SCacheItem& toremove = lruItems[0];
@@ -248,7 +250,7 @@ SCacheItem LRUMemCache::createInt( __int64 offset )
 	}
 
 	SCacheItem newItem;
-	assert(buffer != nullptr);
+	assert(buffer != NULL);
 	newItem.buffer=buffer;
 	newItem.offset=offset - offset % buffersize;
 
@@ -262,7 +264,7 @@ char* LRUMemCache::create( __int64 offset )
 	size_t bsize;
 	char* buf = get(offset, bsize);
 
-	if(buf!=nullptr)
+	if(buf!=NULL)
 	{
 		return buf;
 	}

@@ -5,7 +5,7 @@ g.startup=true;
 g.no_tab_mouse_click=false;
 g.tabberidx=-1;
 g.progress_stop_id=-1;
-g.current_version=2005001300;
+g.current_version=2005003800;
 g.status_show_all=false;
 g.ldap_login=false;
 g.datatable_default_config={};
@@ -107,7 +107,10 @@ function startup()
 			available_langs+=",";
 	}
 	
-	new getJSON("login", available_langs, try_anonymous_login);
+	g.sso_before_login(function()
+	{
+		new getJSON("login", available_langs, try_anonymous_login);
+	});
 }
 
 
@@ -269,7 +272,13 @@ function try_anonymous_login(data)
 	}
 	else
 	{		
-		if(data.success)
+		var sso_data=g.sso_take_pending();
+		if(sso_data)
+		{
+			// Returned from the single sign-on provider
+			login3(sso_data);
+		}
+		else if(data.success)
 		{
 			g.session=data.session;
 			build_main_nav();
@@ -281,7 +290,7 @@ function try_anonymous_login(data)
 			{
 				g.ldap_enabled=true;
 			}
-			
+
 			var ndata=dustRender("login");
 			if(g.data_f!=ndata)
 			{
@@ -289,17 +298,12 @@ function try_anonymous_login(data)
 				I('data_f').innerHTML=ndata;
 				g.data_f=ndata;
 			}
+
+			g.sso_login_ui();
 			
-			if(data.admin_only)
-			{
-				I('username_row').style.display="none";
-				I('username').value = data.admin_only;
-				I("password").focus();
-			}
-			else
-			{
-				I('username').focus();
-			}
+			// The username field is always shown (it used to be hidden
+			// if there was only one user)
+			I('username').focus();
 		}
 	}
 }
@@ -1165,12 +1169,6 @@ function show_status_check2(data)
 				ext_text+="<br>UrBackup Server has trouble storing files to backup storage with the maximum file name length it was compiled with"+max_path_str+
 					". There might be issues when backing up files/folders with long file name.";
 			}
-			else if(data.dir_error_hint=="err_btrfs_backupfolder_differs")
-			{
-				ext_text+="<br>Backup folder configured for btrfs (suid helper) at /etc/urbackup/backupfolder ("+data.btrfs_backupfolder
-					+") differs from backup folder configured for UrBackup (Settings -> General, "+data.urbackup_backupfolder+") " +
-					"This can lead to issues.";
-			}
 			else
 			{
 				ext_text+="<br>"+data.dir_error_hint;
@@ -1182,8 +1180,7 @@ function show_status_check2(data)
 				|| data.dir_error_ext=="dos_names_created"
 				|| data.dir_error_ext=="err_file_system_case_insensitive"
 				|| data.dir_error_ext=="err_file_system_special_windows_files_disallowed"
-				|| data.dir_error_ext=="err_long_create_failed"
-				|| data.dir_error_ext=="err_btrfs_backupfolder_differs") )
+				|| data.dir_error_ext=="err_long_create_failed") )
 		{
 			generic_text=false;
 		}
@@ -1203,6 +1200,12 @@ function show_status_check2(data)
 	{
 		check_res+=dustRender("tmpdir_error", {tmpdir_error_text: trans("tmpdir_error_text"), stop_show_key: data.tmpdir_error_stop_show_key});
 	}
+
+	if(data.no_users
+		&& (typeof data.no_users_show === "undefined" || data.no_users_show===true )  )
+	{
+		check_res+=dustRender("no_users", {no_users_text: trans("no_users_text"), stop_show_key: data.no_users_stop_show_key});
+	}
 	
 	var virus_error="";
 	if(data.virus_error
@@ -1211,6 +1214,8 @@ function show_status_check2(data)
 		check_res+=dustRender("virus_error", {stop_show_key: data.virus_error_stop_show_key, virus_error_path: data.virus_error_path});
 	}	
 	I("delayed_status_errors").innerHTML = check_res;
+
+	g.no_internet_server = data.no_internet_server ? true : false;
 }
 
 function show_status2(data)
@@ -1580,7 +1585,7 @@ function show_status2(data)
 		}
 		
 		datatable_config.aoColumnDefs = [
-				{ "bVisible": false, "aTargets": [ 2, 4, 10, 11, 12, 13 ]
+				{ "bVisible": false, "aTargets": [ 2, 4, 10, 11, 12 ]
 				}];
 				
 		if(data.allow_modify_clients)
@@ -1612,7 +1617,6 @@ function show_status2(data)
 		colvis.columns.push(10);
 		colvis.columns.push(11);
 		colvis.columns.push(12);
-		colvis.columns.push(13);
 		
 		
 		var columns = [ 1 ];
@@ -1752,29 +1756,15 @@ g.checkForNewVersion = function(curr_version_num, curr_version_str)
 	}
 }
 
-function getSiteURL()
+function downloadClientURL(clientid, authkey, os)
 {
 	var site_url = location.protocol+'//'+location.host+location.pathname;
-
-	if(site_url.endsWith("index.htm"))
-	{
-		site_url = site_url.slice(0, -9);
-	}
-	else if(site_url.endsWith("index.html"))
-	{
-		site_url = site_url.slice(0, -10);	
-	}
 	
 	if(site_url.substr(site_url.length-1)!="/")
 	{
 		site_url+="/";
 	}
 
-	return site_url;
-}
-
-function downloadClientURL(clientid, authkey, os)
-{
 	if(authkey)
 	{
 		authkey = "&authkey="+encodeURIComponent(authkey);
@@ -1785,7 +1775,7 @@ function downloadClientURL(clientid, authkey, os)
 	}
 	var ses = g.session;
 	g.session=null;
-	var ret = getSiteURL() + getURL("download_client", "clientid="+clientid+authkey+"&os="+os);
+	var ret = site_url + getURL("download_client", "clientid="+clientid+authkey+"&os="+os);
 	g.session = ses;
 	return ret;
 }
@@ -1920,12 +1910,6 @@ function prepareBackupObj(data, obj, image)
 	
 	if(image && obj.id<0)
 		obj.id*=-1;
-
-	if(obj.deletion_protected)
-		obj.is_deletion_protected=true;
-
-	if(obj.delete_client_pending)
-		obj.can_delete=false;
 	
 	return obj;
 }
@@ -2572,11 +2556,11 @@ function build_alert_params(alert_script)
 				if(param.type=="str" || param.type=="num" || param.type=="int")
 				{
 					console.log(val);
-					params_html+="<input type=\"text\" class=\"form-control\" id=\"alert_name_"+escapeHTML(param.name)+"\" value=\""+escapeHTMLDoubleQuote(val)+"\" onchange=\"update_alert_params()\"/>";
+					params_html+="<input type=\"text\" class=\"form-control\" id=\"alert_name_"+escapeHTML(param.name)+"\" value=\""+escapeHTMLDoubleQuote(val)+"\" onchange=\"update_alert_params()\" onkeyup=\"update_alert_params()\"/>";
 				}
 				else if(param.type=="choice")
 				{
-					params_html+="<select class=\"form-control\" id=\"alert_name_"+escapeHTML(param.name)+"\" onchange=\"update_alert_params()\">";
+					params_html+="<select class=\"form-control\" id=\"alert_name_"+escapeHTML(param.name)+"\" onchange=\"update_alert_params()\" onkeyup=\"update_alert_params()\">";
 					var toks = param.default_value.split("|");
 					for(var k=0;k<toks.length;++k)
 					{
@@ -2602,7 +2586,7 @@ function build_alert_params(alert_script)
 						val_ms = toks[0];
 					}						
 					val = convert_interval_from_ms(val_ms, unit);
-					params_html+="<div class=\"input-group\"><input type=\"text\" class=\"form-control\" id=\"alert_name_"+escapeHTML(param.name)+"\" value=\""+val+"\" onchange=\"update_alert_params()\"/>";
+					params_html+="<div class=\"input-group\"><input type=\"text\" class=\"form-control\" id=\"alert_name_"+escapeHTML(param.name)+"\" value=\""+val+"\" onchange=\"update_alert_params()\" onkeyup=\"update_alert_params()\"/>";
 					params_html+="<input type=\"hidden\" class=\"form-control\" id=\"alert_name_"+escapeHTML(param.name)+"_val_ms\" value=\""+escapeHTMLDoubleQuote(val_ms)+"\"/>";
 					params_html+="<div class=\"input-group-addon\">";
 					var units=["ms", "s", "m", "h", "d", "M", "y"];
@@ -2671,9 +2655,9 @@ function update_alert_params(nochange)
 			}
 		}
 	}
-	g.alert_params = $.param(p);
+	g.last_alert_params = $.param(p);
 	if(!nochange)
-		settingChangeKey("alert_params");
+		settingChangeKey("alert_params", $.param(p));
 }
 function update_alert_unit(name)
 {
@@ -2797,6 +2781,75 @@ function unescapeCurrentSettings(settings)
 			setting.value_group = unescapeHTML(setting.value_group);
 	}
 }
+function settingSwitchReset(key)
+{
+	var use = g.curr_settings[key].use;
+	if(use==1)
+		use=2;
+	else if(use==2)
+		use=4;
+	else if(use==4)
+		use=3;
+	else if(use==3)
+		use=1;
+
+	if( (g.curr_settings_type==0 || g.curr_settings_type==1) && use!=1 && use!=2)
+		use=1;
+
+	g.curr_settings[key].use=use;
+
+	for(var i=0;i<g.settings_list.length;++i)
+	{
+		var lkey = g.settings_list[i];
+		if(lkey=="internet_authkey")
+			continue;
+
+		var lval = g.curr_settings[lkey];
+	
+		if(typeof lval=="undefined")
+			continue;
+		
+		if(typeof lval.use=="undefined")
+			continue
+
+		luse = fixupUse(lkey, use);
+		
+		if(luse==1)
+		{
+			if(typeof g.curr_settings[lkey].orig_html!="undefined")
+			{
+				I(lkey+"_div").innerHTML = lval.orig_html;
+			}
+		}
+
+		if(luse==2 &&
+			typeof lval.value == "undefined")
+		{
+			lval.value = getVal(g.curr_settings[lkey])
+		}
+
+		lval.use = luse;
+	}
+
+	renderSettingSwitchAll();
+}
+function fixupUse(key, use)
+{
+	if($.inArray(key, g.client_settings_list)==-1
+		&& use==4 && $.inArray(key, g.mergable_settings_list)!=-1)
+		use=3;
+	else if($.inArray(key, g.client_settings_list)==-1
+		&& use>2)
+		use=1;
+	if($.inArray(key, g.mergable_settings_list)==-1
+		&& (use==3 || use>4))
+		use=1;
+
+	if( (g.curr_settings_type==0 || g.curr_settings_type==1) && use!=1 && use!=2)
+		use=1;
+
+	return use;
+}
 function settingSwitch()
 {
 	var key = $(this).attr("id");
@@ -2808,6 +2861,12 @@ function settingSwitch()
 
 	if(key=="backup_window")
 		key="backup_window_incr_file";
+
+	if(key=="reset")
+	{
+		settingSwitchReset(key);
+		return;
+	}
 
 	var use = g.curr_settings[key].use;
 
@@ -2826,15 +2885,7 @@ function settingSwitch()
 		use=1;
 	}
 
-	if($.inArray(key, g.client_settings_list)==-1
-		&& use==4 && $.inArray(key, g.mergable_settings_list)!=-1)
-		use=3;
-	else if($.inArray(key, g.client_settings_list)==-1
-		&& use>2)
-		use=1;
-	if($.inArray(key, g.mergable_settings_list)==-1
-		&& (use==3 || use>4))
-		use=1;
+	use = fixupUse(key, use);
 
 	if(use==2 &&
 		typeof g.curr_settings[key].value == "undefined")
@@ -2858,7 +2909,12 @@ function settingSwitch()
 		{
 			if(key=="archive")
 			{
-				renderArchiveSettings(g.curr_settings_type==0);
+				renderArchiveSettings(g.curr_settings_type==0 || g.curr_settings_type == 1);
+			}
+			else if(key=="alert_params")
+			{
+				g.last_alert_params = val;
+				updateAlertScriptParams();
 			}
 			else
 			{
@@ -2937,7 +2993,7 @@ function settingChangeKey(key)
 
 		if(key=="alert_params")
 		{
-			g.curr_settings[key].value = g.alert_params;
+			g.curr_settings[key].value = g.last_alert_params;
 		}
 		else if($("#"+key).attr("type")=="checkbox")
 		{
@@ -2961,10 +3017,48 @@ function settingChange(p_key)
 	
 	settingChangeKey(key);
 }
+
+function getResetVal(settings)
+{
+	var use = 0;
+	for (var key in settings) {
+		if (!settings.hasOwnProperty(key)) {
+			continue;
+		}
+
+		var setting = settings[key];
+
+		if(typeof setting!="object")
+			continue;
+
+		use |= setting.use;
+	}
+
+	if(use!=1 && use!=2 && use!=4)
+		use = 1;
+
+	return {"use": use,
+		value: "",
+		value_client: "",
+		value_group: ""};
+}
+
 function renderSettingSwitch(key)
 {
 	var val;
-	if(key=="backup_window")
+	if(key=="reset")
+	{
+		if(typeof g.curr_settings["reset"] === "undefined")
+		{
+			val = getResetVal(g.curr_settings);
+			g.curr_settings["reset"] = val;
+		}
+		else
+		{
+			val = g.curr_settings[key];
+		}
+	}
+	else if(key=="backup_window")
 	{
 		val = g.curr_settings["backup_window_incr_file"];
 	}
@@ -3075,7 +3169,7 @@ function mergeSettingUpdateUse(key)
 }
 function renderMergeSetting(key)
 {
-	if(key=="archive")
+	if(key=="archive" || key=="reset")
 		return;
 
 	var val = g.curr_settings[key];
@@ -3180,6 +3274,11 @@ function renderSettingSwitchAll()
 	if(I("backup_window_sw"))
 	{
 		renderSettingSwitch("backup_window");
+	}
+
+	if(I("reset_sw"))
+	{
+		renderSettingSwitch("reset");
 	}
 }
 function show_settings2(data)
@@ -3453,7 +3552,6 @@ function show_settings2(data)
 			g.curr_settings = data.settings;
 			data.settings = getCurrentSettings(data.settings);
 			data.settings.backup_dirs_optional=getCheckboxValue(data.settings.backup_dirs_optional);
-			data.settings.pause_if_windows_unlocked = getCheckboxValue(data.settings.pause_if_windows_unlocked);
 			var internet_server = unescapeHTML(data.settings.internet_server);
 			if(internet_server.indexOf("ws://")!=0 &&
 				internet_server.indexOf("wss://")!=0 &&
@@ -3555,8 +3653,10 @@ function show_settings2(data)
 			aparams = build_alert_params(data.settings.alert_script);
 			data.settings.alert_scripts = aparams.options;
 			data.settings.mod_alert_params = aparams.params;
+			data.settings.vss_select_components = unescapeHTML(data.settings.vss_select_components);
 			
 			data.settings.client_settings=false;
+			data.settings.internet_server_url_placeholder = getServerUrlPlaceholder();
 			
 			data.settings.settings_inv=dustRender("settings_inv_row", data.settings);
 			ndata+=dustRender("settings_general", data.settings);
@@ -3574,7 +3674,6 @@ function show_settings2(data)
 			g.curr_settings = data.settings;
 			data.settings = getCurrentSettings(data.settings);
 			data.settings.backup_dirs_optional=getCheckboxValue(data.settings.backup_dirs_optional);
-			data.settings.pause_if_windows_unlocked = getCheckboxValue(data.settings.pause_if_windows_unlocked);
 					
 			var transfer_mode_params1=["raw", "hashed"];
 			var transfer_mode_params2=["raw", "hashed", "blockhash"];
@@ -3684,8 +3783,10 @@ function show_settings2(data)
 			aparams = build_alert_params(data.settings.alert_script);
 			data.settings.alert_scripts = aparams.options;
 			data.settings.mod_alert_params = aparams.params;
+			data.settings.vss_select_components = unescapeHTML(data.settings.vss_select_components);
 			
 			group_membership_selectpicker=true;
+			data.settings.internet_server_url_placeholder = getServerUrlPlaceholder();
 						
 			data.settings.settings_inv=dustRender("settings_inv_row", data.settings);
 			ndata+=dustRender(is_group ? "settings_group" : "settings_user", data.settings);
@@ -4150,7 +4251,6 @@ g.settings_list=[
 "max_image_full",
 "allow_overwrite",
 "startup_backup_delay",
-"pause_if_windows_unlocked",
 "backup_window_incr_file",
 "backup_window_full_file",
 "backup_window_incr_image",
@@ -4171,6 +4271,7 @@ g.settings_list=[
 "allow_file_restore",
 "allow_component_restore",
 "allow_component_config",
+"allow_all_clients_restore",
 "image_letters",
 "internet_authkey",
 "internet_speed",
@@ -4222,18 +4323,14 @@ g.settings_list=[
 "hash_threads",
 "client_hash_threads",
 "image_compress_threads",
-"ransomware_canary_paths",
-"backup_dest_url",
-"backup_dest_params",
-"backup_dest_secret_params",
-"backup_unlocked_window"
+"client_rename_detection",
+"max_running_jobs_per_client_group"
 ];
 g.general_settings_list=[
 "backupfolder",
 "no_images",
 "no_file_backups",
 "autoshutdown",
-"startup_cleanup",
 "download_client",
 "autoupdate_clients",
 "max_sim_backups",
@@ -4251,7 +4348,8 @@ g.general_settings_list=[
 "show_server_updates",
 "server_url",
 "internet_expect_endpoint",
-"internet_server_bind_port"
+"internet_server_bind_port",
+"restore_authkey"
 ];
 g.mail_settings_list=[
 "mail_servername",
@@ -4289,10 +4387,7 @@ g.mergable_settings_list=[
 "default_dirs",
 "image_letters",
 "vss_select_components",
-"archive",
-"ransomware_canary_paths",
-"backup_dest_params",
-"backup_dest_secret_params"
+"archive"
 ];
 g.client_settings_list=[
 "update_freq_incr",
@@ -4357,7 +4452,7 @@ function getSettingSave(key)
 		|| key=="backup_window_full_file"
 		|| key=="backup_window_incr_image"
 		|| key=="backup_window_full_image" )
-		&& I("backup_window"))
+		&& !g.showing_backup_window_details)
 	{
 		key= "backup_window_incr_file";
 	}
@@ -4440,7 +4535,8 @@ function getInternetSettings()
 
 		var server_regex = /(((;|^)(([\w-]+(\.[\w-]*)*)|((?!0)(?!.*\.)((1?\d?\d|25[0-5]|2[0-4]\d)(\.)){4})))+$)|(^$)|(^(ws|wss):\/\/[\w-]+([\w-]*)+([\w.,@?^=%&amp;:\/~+#-]*[\w@?^=%&amp;\/~+#-])?$)|(^(urbackup):\/\/[\w-]+([\w-]*)+([\w.,@?^=%&amp;:\/~+#-]*[\w@?^=%&amp;\/~+#-])?$)/i;
 
-		if(!server_regex.test(internet_server))
+		if(internet_server.length>0 && internet_server!=="urbackup://" &&
+			!server_regex.test(internet_server))
 		{
 			alert(trans("validate_err_notregexp_internet_server"));
 			return null;
@@ -4470,7 +4566,10 @@ function getInternetSettings()
 	pars+="&internet_server="+encodeURIComponent(internet_server_par);
 	pars+="&internet_server_port="+encodeURIComponent(internet_server_port);
 
-	if(!validate_text_regex([{ id: "internet_server_proxy", regexp: /(^(http|https):\/\/[\w-]+([\w-]*)+([\w.,@?^=%&amp;:\/~+#-]*[\w@?^=%&amp;\/~+#-])?$)|(^$)/i }])) return null;
+	if(I("internet_server_proxy"))
+	{
+		if(!validate_text_regex([{ id: "internet_server_proxy", regexp: /(^(http|https):\/\/[\w-]+([\w-]*)+([\w.,@?^=%&amp;:\/~+#-]*[\w@?^=%&amp;\/~+#-])?$)|(^$)/i }])) return null;
+	}
 	
 	for(var i=0;i<g.internet_settings_list.length;++i)
 	{
@@ -4741,6 +4840,13 @@ function login2(data)
 		I('username').focus();
 		return;
 	}
+	else if(data.error==3)
+	{
+		alert(trans("too_many_login_attempts"));
+		stopLoading();
+		I('username').focus();
+		return;
+	}
 	
 	if(data.ses)
 		g.session=data.ses;
@@ -4765,6 +4871,12 @@ function login3(data)
 	if(data.error==2)
 	{
 		alert(trans("password_wrong"));
+		I('password').focus();
+		return;
+	}
+	else if(data.error==3)
+	{
+		alert(trans("too_many_login_attempts"));
 		I('password').focus();
 		return;
 	}
@@ -4960,22 +5072,22 @@ function transRights()
 	var n=0;
 	while(true)
 	{
-		var right=getSelectValues('right'+n);
+		var right=I('right'+n);
 		var right_trans=I('right_trans'+n);
-		if( right !== null && right_trans!=null )
+		if( right!=null && right_trans!=null )
 		{
 			var t="";
-			if(right === 'all')
+			if(right.value=="all")
 			{
 				t=trans("right_all");
 			}
-			else if(right === 'none')
+			else if(right.value=="none")
 			{
 				t=trans("right_none");
 			}
 			else
 			{
-				var s=right;
+				var s=right.value.split(",");
 				for(var j=0;j<s.length;++j)
 				{
 					var f=false;
@@ -5010,21 +5122,17 @@ function transRights()
 
 function changeUserRights(uid, name)
 {
-
 	var rows="";
-	let rights = g.user_rights[uid];
-	var i;
-	for(i=0;i<rights.length;++i)
+	for(var i=0;i<g.user_rights[uid].length;++i)
 	{
-		var obj=rights[i];
+		var obj=g.user_rights[uid][i];
 		obj.userid=uid;
 		obj.username=name;
 		obj.n=i;
-
-
+		
+		
 		rows+=dustRender("settings_user_rights_change_row", obj);
 	}
-
 	var ndata=dustRender("settings_user_rights_change", {userid: uid, username: name, rows: rows});
 	if(g.data_f!=ndata)
 	{
@@ -5032,25 +5140,6 @@ function changeUserRights(uid, name)
 		I('data_f').innerHTML=ndata;
 		g.data_f=ndata;
 	}
-
-	var clients = []
-
-	new getJSON("settings", "", function (data) {
-		if(data.hasOwnProperty('navitems') && data['navitems'].hasOwnProperty('clients')) {
-			var client_data = data['navitems']['clients'];
-			for (let i = 0; i < client_data.length; i++) {
-				clients.push({
-					id: client_data[i]['id'],
-					name: client_data[i]['name']
-				});
-			}
-			for (i=0;i<rights.length;i++) {
-				addClientsToSelect(clients, `#right${i}`, rights, i)
-			}
-		}
-	});
-
-
 	transRights();
 }
 function deleteDomain(uid, name, n)
@@ -5072,12 +5161,11 @@ function submitChangeUserRights(uid)
 	var rights=[];
 	while(true)
 	{
-		var right=getSelectValues('right'+n);
-		console.log(right)
+		var right=I('right'+n);
 		var domain=I('domain'+n);
 		if( right!=null && domain!=null )
 		{
-			rights.push( { right: right, domain: domain.value } );
+			rights.push( { right: right.value, domain: domain.value } );
 		}
 		else
 		{
@@ -5800,7 +5888,7 @@ function deleteArchiveItem(id)
 
 	if(rerender)
 	{
-		renderArchiveSettings(g.curr_settings_type==0);
+		renderArchiveSettings(g.curr_settings_type==0 || g.curr_settings_type==1);
 	}
 }
 function changeArchiveForUnit()
@@ -5903,8 +5991,6 @@ function backups_started(data)
 }
 function stopBackup(clientid, id)
 {
-	if(!confirm(trans("really_stop_backup"))) return;
-	
 	if(!startLoading()) return;
 	
 	alert(trans("trying_to_stop_backup"));
@@ -5945,9 +6031,13 @@ function showBackupWindowDetails()
 }
 function hideBackupWindowDetails()
 {
+	g.showing_backup_window_details=true;
 	if(I('backup_window_incr_file').value==I('backup_window_full_file').value
 	    && I('backup_window_full_file').value==I('backup_window_incr_image').value
-	    && I('backup_window_incr_image').value==I('backup_window_full_image').value )
+	    && I('backup_window_incr_image').value==I('backup_window_full_image').value 
+		&& getSettingSave('backup_window_incr_file').use ==  getSettingSave('backup_window_full_file').use
+		&& getSettingSave('backup_window_full_file').use ==  getSettingSave('backup_window_incr_image').use
+		&& getSettingSave('backup_window_incr_image').use ==  getSettingSave('backup_window_full_image').use )
 	{
 		setBackupWindowDisplay("none");
 		I('backup_window').value=I('backup_window_incr_file').value;
@@ -6014,12 +6104,26 @@ g.maximize_or_minimize = function(refresh)
 	}
 }
 
+function getServerUrlPlaceholder()
+{
+	var site_url = (location.protocol == "http:" ? "ws:" : "wss:") + "//" + location.host + location.pathname;
+	
+	if(site_url.substr(site_url.length-1)!="/")
+	{
+		site_url+="/";
+	}
+
+	site_url+="socket";
+
+	return site_url;
+}
+
 function addNewClient1()
 {
 	if(!startLoading()) return;
 	stopLoading();
 	
-	var ndata=dustRender("add_client", {server_identity: g.server_identity, server_pubkey: g.server_pubkey});
+	var ndata=dustRender("add_client", {server_identity: g.server_identity, server_pubkey: g.server_pubkey, no_internet_server: g.no_internet_server, internet_server_url_placeholder: getServerUrlPlaceholder()});
 	
 	if(g.data_f!=ndata)
 	{
@@ -6037,9 +6141,18 @@ function addNewClient2()
 		{
 			return;
 		}
+
+		var pars = "clientname="+encodeURIComponent(I("internet_client_name").value)
+
+		if(I("internet_server"))
+		{
+			var internet_pars = getInternetSettings();
+			if(internet_pars==null) return;
+			pars += internet_pars;
+		}
 		
 		if(!startLoading()) return;
-		new getJSON("add_client", "clientname="+encodeURIComponent(I("internet_client_name").value), addNewClient3);
+		new getJSON("add_client", pars, addNewClient3);
 	}
 	else
 	{
@@ -6061,7 +6174,7 @@ function addNewClient3(data)
 		data.mac_url = downloadClientURL(data.new_clientid, data.new_authkey, "mac");
 		if(data.internet_server_proxy)
 		{
-			data.internet_proxy_settings = " -k internet_server_proxy -v \""+data.internet_server_proxy+"\"";
+			data.internet_proxy_settings = " --proxy \""+unescapeHTML(data.internet_server_proxy)+"\"";
 		}
 		var ndata=dustRender("client_added", data);
 	
@@ -6376,6 +6489,8 @@ function renderArchiveSettings(global)
 		var prefix="c";
 		if(typeof setting.use=="undefined" )
 			prefix="d";
+		else if(global)
+			prefix="g";
 
 		var idx=0;
 		while(typeof params["every_"+prefix+idx] != "undefined")
@@ -6395,7 +6510,14 @@ function linux_image_restore1(data)
 		alert("Error getting linux image restore information");
 	}
 
-	data.linux_restore_url = getSiteURL()+"x?a=download_client&restore_image=1&os=linux&authkey="+encodeURIComponent(data.authkey)+"&token="+encodeURIComponent(data.token);
+	var site_url = location.protocol+'//'+location.host+location.pathname;
+	
+	if(site_url.substr(site_url.length-1)!="/")
+	{
+		site_url+="/";
+	}
+
+	data.linux_restore_url = site_url+"x?a=download_client&restore_image=1&os=linux&authkey="+encodeURIComponent(data.authkey)+"&token="+encodeURIComponent(data.token);
 	
 	var ndata=dustRender("restore_linux_img", data);
 	if(g.data_f!=ndata)
